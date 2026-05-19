@@ -294,7 +294,7 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
 </div>
 
 <!-- Hidden file input -->
-<input type="file" id="file-input" accept=".md,.txt,.csv,.tsv,.json,.xml,.yaml,.yml" style="display:none">
+<input type="file" id="file-input" accept=".md,.txt,.csv,.tsv,.json,.xml,.yaml,.yml" multiple style="display:none">
 
 <!-- Tooltip element -->
 <div class="tooltip" id="tooltip"></div>
@@ -709,8 +709,9 @@ async function executeOperation(op, extra) {
   switch (op) {
     case 'ingest': {
       const formData = new FormData();
-      formData.append('file', extra);
-      resp = await callApi('POST', '/api/ingest', formData);
+      const rebuild = extra.rebuild !== false;  // default true
+      formData.append('file', extra.file || extra);
+      resp = await callApi('POST', `/api/ingest?rebuild=${rebuild}`, formData);
       break;
     }
     case 'query': {
@@ -804,16 +805,26 @@ function bindEvents() {
   });
 
   // File input
-  dom.fileInput.addEventListener('change', () => {
-    const file = dom.fileInput.files[0];
-    if (!file) return;
-    if (file.size > 50 * 1024 * 1024) {
-      alert('文件过大（>50MB），请压缩或拆分后再试');
-      dom.fileInput.value = '';
-      return;
-    }
-    executeOperation('ingest', file);
+  dom.fileInput.addEventListener('change', async () => {
+    const files = Array.from(dom.fileInput.files);
+    if (!files.length) return;
     dom.fileInput.value = '';
+
+    for (const f of files) {
+      if (f.size > 50 * 1024 * 1024) {
+        appendLog('error', `文件过大（>50MB）: ${f.name}`);
+        return;
+      }
+    }
+
+    // Process sequentially, only last file triggers graph rebuild
+    for (let i = 0; i < files.length; i++) {
+      const rebuild = (i === files.length - 1);
+      executeOperation('ingest', {file: files[i], rebuild});
+      while (State.isExecuting) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
   });
 
   // Drawer

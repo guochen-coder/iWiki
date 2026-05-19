@@ -52,7 +52,7 @@ _load_claude_env()
 for _d in ["raw", "wiki", "graph"]:
     (PROJECT_ROOT / _d).mkdir(parents=True, exist_ok=True)
 
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
 
@@ -132,8 +132,8 @@ async def root():
 # ── REST Endpoints ───────────────────────────────────────────────
 
 @app.post("/api/ingest")
-async def api_ingest(file: UploadFile = File(...)):
-    """Upload a document for ingestion."""
+async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
+    """Upload a document for ingestion. Set rebuild=false to skip auto graph rebuild."""
     if op_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
@@ -169,21 +169,21 @@ async def api_ingest(file: UploadFile = File(...)):
 
                 await push_progress(tid, "log", level="success", message=f"摄入完成: {safe_name}")
 
-                # Auto-rebuild graph to include new nodes
-                await push_progress(tid, "log", level="info", message="开始重建图谱...")
-                await push_progress(tid, "progress", step="graph", message="提取 wikilinks 中...")
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
-                )
-                # Read graph stats for log
-                graph_json = PROJECT_ROOT / "graph" / "graph.json"
-                if graph_json.exists():
-                    with open(graph_json) as gf:
-                        gd = json.load(gf)
-                    n_nodes = len(gd.get("nodes", []))
-                    n_edges = len(gd.get("edges", []))
-                    await push_progress(tid, "log", level="success", message=f"图谱已更新: {n_nodes} 节点, {n_edges} 边")
+                # Auto-rebuild graph (skip if batch mode)
+                if rebuild:
+                    await push_progress(tid, "log", level="info", message="开始重建图谱...")
+                    await push_progress(tid, "progress", step="graph", message="提取 wikilinks 中...")
+                    loop_get = asyncio.get_event_loop()
+                    await loop_get.run_in_executor(
+                        None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
+                    )
+                    graph_json = PROJECT_ROOT / "graph" / "graph.json"
+                    if graph_json.exists():
+                        with open(graph_json) as gf:
+                            gd = json.load(gf)
+                        n_nodes = len(gd.get("nodes", []))
+                        n_edges = len(gd.get("edges", []))
+                        await push_progress(tid, "log", level="success", message=f"图谱已更新: {n_nodes} 节点, {n_edges} 边")
 
                 await push_progress(tid, "complete", result={"ingested": safe_name})
                 tasks[tid]["status"] = "completed"

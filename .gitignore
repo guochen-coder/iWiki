@@ -25,6 +25,9 @@ graph/
 .claude/skills/
 .claude/.DS_Store
 
+# Dev reference (not needed at runtime)
+vendor/
+
 # Dev docs (AI agent context, not needed by users)
 CLAUDE.md
 PRD.md

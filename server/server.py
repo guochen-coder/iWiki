@@ -48,6 +48,10 @@ def _load_claude_env():
 
 _load_claude_env()
 
+# Ensure required directories exist
+for _d in ["raw", "wiki", "graph"]:
+    (PROJECT_ROOT / _d).mkdir(parents=True, exist_ok=True)
+
 from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 import uvicorn

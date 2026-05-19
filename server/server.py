@@ -94,15 +94,21 @@ def _load_source_map() -> dict:
         pass
     return {}
 
-def _save_source_map(slug: str, raw_name: str):
+def _save_source_map(slug: str, raw_name: str, created_pages: list | None = None):
     mapping = _load_source_map()
-    mapping[slug] = raw_name
+    mapping[slug] = {"raw_name": raw_name, "created_pages": created_pages or []}
     SOURCE_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
     SOURCE_MAP_FILE.write_text(json.dumps(mapping, indent=2, ensure_ascii=False))
 
 def _remove_source_map(slug: str):
     mapping = _load_source_map()
-    mapping.pop(slug, None)
+    entry = mapping.pop(slug, None)
+    # Also remove the entity/concept pages created during ingest
+    if entry and isinstance(entry, dict):
+        for page_path in entry.get("created_pages", []):
+            p = PROJECT_ROOT / "wiki" / page_path
+            if p.exists():
+                p.unlink()
     SOURCE_MAP_FILE.write_text(json.dumps(mapping, indent=2, ensure_ascii=False))
 
 
@@ -160,12 +166,14 @@ async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
                 await push_progress(tid, "log", level="info", message=f"读取文件: {safe_name}")
                 await push_progress(tid, "progress", step="ingest", message="AI 分析中，可能需要 30-60 秒...")
 
-                # Run ingest in thread pool, capture the LLM-generated slug
+                # Run ingest in thread pool, capture slug + created pages
                 loop = asyncio.get_event_loop()
-                slug = await loop.run_in_executor(None, ingest.ingest, str(dest), True)
+                result = await loop.run_in_executor(None, ingest.ingest, str(dest), True)
+                slug = result["slug"]
+                created_pages = result.get("created_pages", [])
 
-                # Map slug → original filename for later lookup (delete, list)
-                _save_source_map(slug, safe_name)
+                # Map slug → {raw_name, created_pages} for later lookup (delete, list)
+                _save_source_map(slug, safe_name, created_pages)
 
                 await push_progress(tid, "log", level="success", message=f"摄入完成: {safe_name}")
 
@@ -374,12 +382,19 @@ async def api_batch_delete(body: dict):
                 source_map = _load_source_map()
                 for source_name in names:
                     source_page = PROJECT_ROOT / "wiki" / "sources" / f"{source_name}.md"
-                    raw_name = source_map.get(source_name, source_name)
+                    entry = source_map.get(source_name, source_name)
+                    raw_name = entry["raw_name"] if isinstance(entry, dict) else entry
                     raw_file = PROJECT_ROOT / "raw" / raw_name
                     if source_page.exists():
                         source_page.unlink()
                     if raw_file.exists():
                         raw_file.unlink()
+                    # Also remove entity/concept pages created during ingest
+                    if isinstance(entry, dict):
+                        for page_path in entry.get("created_pages", []):
+                            p = PROJECT_ROOT / "wiki" / page_path
+                            if p.exists():
+                                p.unlink()
                     source_map.pop(source_name, None)
                     deleted.append(raw_name)
                 # Persist cleaned source map
@@ -433,7 +448,8 @@ async def api_delete_source(source_name: str):
 
                 # Remove raw file using source map (slug → original filename)
                 source_map = _load_source_map()
-                raw_name = source_map.get(source_name, source_name)
+                entry = source_map.get(source_name, source_name)
+                raw_name = entry["raw_name"] if isinstance(entry, dict) else entry
                 raw_file = PROJECT_ROOT / "raw" / raw_name
                 if raw_file.exists():
                     raw_file.unlink()
@@ -486,7 +502,8 @@ async def api_sources():
     files = []
     for f in sorted(sources_dir.glob("*.md")):
         slug = f.stem
-        raw_name = source_map.get(slug, slug)
+        entry = source_map.get(slug, slug)
+        raw_name = entry["raw_name"] if isinstance(entry, dict) else entry
         files.append({
             "name": slug,
             "raw_name": raw_name,

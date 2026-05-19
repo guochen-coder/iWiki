@@ -370,7 +370,7 @@ Return ONLY a valid JSON object with these fields (no markdown fences, no prose 
         print("  ✓ Validation passed — no broken links, all pages indexed")
     print()
 
-    return slug
+    return {"slug": slug, "created_pages": created_pages}
 
 
 if __name__ == "__main__":

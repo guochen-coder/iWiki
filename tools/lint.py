@@ -43,8 +43,7 @@ def call_llm(prompt: str, model_env: str, default_model: str, max_tokens: int = 
     try:
         from litellm import completion
     except ImportError:
-        print("Error: litellm not installed. Run: pip install litellm")
-        sys.exit(1)
+        raise RuntimeError("litellm not installed. Run: pip install litellm")
         
     model = os.getenv(model_env, default_model)
     response = completion(

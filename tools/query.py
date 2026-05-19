@@ -43,8 +43,7 @@ def call_llm(prompt: str, model_env: str, default_model: str, max_tokens: int = 
     try:
         from litellm import completion
     except ImportError:
-        print("Error: litellm not installed. Run: pip install litellm")
-        sys.exit(1)
+        raise RuntimeError("litellm not installed. Run: pip install litellm")
         
     model = os.getenv(model_env, default_model)
     response = completion(
@@ -120,8 +119,7 @@ def query(question: str, save_path: str | None = None):
     # Step 1: Read index
     index_content = read_file(INDEX_FILE)
     if not index_content:
-        print("Wiki is empty. Ingest some sources first with: python tools/ingest.py <source>")
-        sys.exit(1)
+        raise RuntimeError("Wiki is empty. Ingest some sources first with: python tools/ingest.py <source>")
 
     # Step 2: Find relevant pages
     relevant_pages = find_relevant_pages(question, index_content)

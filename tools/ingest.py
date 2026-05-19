@@ -67,8 +67,7 @@ def call_llm(prompt: str, max_tokens: int = 8192) -> str:
     try:
         from litellm import completion
     except ImportError:
-        print("Error: litellm not installed. Run: pip install litellm")
-        sys.exit(1)
+        raise RuntimeError("litellm not installed. Run: pip install litellm")
         
     model = os.getenv("LLM_MODEL", "claude-3-5-sonnet-latest")
     
@@ -199,16 +198,16 @@ def convert_to_md(source: Path) -> Path:
     try:
         from markitdown import MarkItDown
     except ImportError:
-        print("Error: markitdown not installed (needed to convert non-.md files).")
-        print("  Install with: pip install markitdown")
-        sys.exit(1)
+        raise RuntimeError(
+            "markitdown not installed. Skipping conversion for .txt/.csv/.json etc.\n"
+            "  Install with: pip install markitdown"
+        )
 
     md = MarkItDown(enable_plugins=False)
     try:
         result = md.convert(str(source))
     except Exception as e:
-        print(f"Error: failed to convert '{source.name}': {e}")
-        sys.exit(1)
+        raise RuntimeError(f"failed to convert '{source.name}': {e}")
 
     # Write converted output next to source as <name>.md
     output = source.with_suffix(".md")
@@ -227,22 +226,29 @@ def convert_to_md(source: Path) -> Path:
 def ingest(source_path: str, auto_convert: bool = True):
     source = Path(source_path)
     if not source.exists():
-        print(f"Error: file not found: {source_path}")
-        sys.exit(1)
+        raise FileNotFoundError(f"file not found: {source_path}")
 
-    # Auto-convert non-markdown files
+    # Auto-convert non-markdown files (skip plain text formats)
+    PLAIN_TEXT_EXTS = {".txt", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml"}
     converted_path = None
     if source.suffix.lower() != ".md":
         if not auto_convert:
             print(f"  Skipping non-.md file (--no-convert): {source.name}")
             return
-        if source.suffix.lower() not in CONVERTIBLE_EXTENSIONS:
+        if source.suffix.lower() in PLAIN_TEXT_EXTS:
+            print(f"  Plain text format ({source.suffix}), ingesting directly...")
+        elif source.suffix.lower() not in CONVERTIBLE_EXTENSIONS:
             print(f"  ⚠️  Unsupported format: {source.suffix} — skipping {source.name}")
             print(f"       Supported: {', '.join(sorted(ALL_SUPPORTED_EXTENSIONS))}")
             return
-        print(f"  Converting {source.name} to markdown...")
-        converted_path = convert_to_md(source)
-        source = converted_path
+        else:
+            print(f"  Converting {source.name} to markdown...")
+            try:
+                converted_path = convert_to_md(source)
+                source = converted_path
+            except RuntimeError as e:
+                print(f"  ⚠️  Conversion failed: {e}")
+                print(f"  Ingesting raw text content instead...")
 
     source_content = source.read_text(encoding="utf-8")
     source_hash = sha256(source_content)
@@ -294,7 +300,7 @@ Return ONLY a valid JSON object with these fields (no markdown fences, no prose 
         print(f"Error parsing API response: {e}")
         print("Raw response saved to /tmp/ingest_debug.txt")
         Path("/tmp/ingest_debug.txt").write_text(raw)
-        sys.exit(1)
+        raise RuntimeError(f"Failed to parse LLM response as JSON: {e}")
 
     # Write source page
     slug = data["slug"]

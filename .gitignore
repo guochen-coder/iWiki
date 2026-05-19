@@ -24,3 +24,10 @@ graph/
 # Claude Code — auto-generated
 .claude/skills/
 .claude/.DS_Store
+
+# Dev docs (AI agent context, not needed by users)
+CLAUDE.md
+PRD.md
+DEVLOG.md
+SKILLS.md
+项目需求.md

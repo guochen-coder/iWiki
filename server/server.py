@@ -343,12 +343,35 @@ async def api_delete_source(source_name: str):
             try:
                 # Remove the source page
                 source_page = PROJECT_ROOT / "wiki" / "sources" / f"{source_name}.md"
-                raw_file = PROJECT_ROOT / "raw" / source_name
                 if source_page.exists():
                     source_page.unlink()
-                if raw_file.exists():
-                    raw_file.unlink()
+
+                # Remove raw file (match by stem, any extension)
+                raw_dir = PROJECT_ROOT / "raw"
+                if raw_dir.exists():
+                    for f in raw_dir.iterdir():
+                        if f.stem == source_name:
+                            f.unlink()
+                            break
+
                 await push_progress(tid, "log", level="success", message=f"已删除: {source_name}")
+
+                # Auto-rebuild graph to remove deleted node
+                await push_progress(tid, "log", level="info", message="开始重建图谱...")
+                await push_progress(tid, "progress", step="graph", message="提取 wikilinks 中...")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
+                )
+                graph_json = PROJECT_ROOT / "graph" / "graph.json"
+                if graph_json.exists():
+                    with open(graph_json) as gf:
+                        gd = json.load(gf)
+                    n_nodes = len(gd.get("nodes", []))
+                    n_edges = len(gd.get("edges", []))
+                    await push_progress(tid, "log", level="success", message=f"图谱已更新: {n_nodes} 节点, {n_edges} 边")
+
+                await push_progress(tid, "complete", result={"deleted": source_name})
                 tasks[tid]["status"] = "completed"
                 tasks[tid]["result"] = {"deleted": source_name}
             except Exception as e:

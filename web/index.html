@@ -111,6 +111,31 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
 #result-content pre{background:var(--bg-log);color:var(--text-log);padding:8px;border-radius:4px;overflow-x:auto;font-size:11px}
 #result-content pre code{background:none;padding:0}
 
+/* Query reading panel — large overlay in graph area */
+#query-panel-overlay{display:none;position:absolute;inset:0;background:rgba(0,0,0,.3);z-index:80;align-items:center;justify-content:center}
+#query-panel-overlay.show{display:flex}
+#query-panel{background:var(--bg-sidebar);width:min(85%,780px);max-height:85%;border-radius:14px;box-shadow:0 8px 48px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;animation:query-in .2s ease-out}
+@keyframes query-in{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+#query-panel-header{padding:20px 24px 12px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px;flex-shrink:0}
+#query-panel-header h2{font-size:18px;flex:1;margin:0;line-height:1.4}
+#query-panel-close{width:32px;height:32px;border-radius:8px;background:transparent;color:var(--text);font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+#query-panel-close:hover{background:var(--bg-panel)}
+#query-panel-body{padding:20px 24px 28px;overflow-y:auto;flex:1;line-height:1.85;font-size:15px;color:var(--text)}
+#query-panel-body h1{font-size:22px;margin:20px 0 10px;line-height:1.4}
+#query-panel-body h2{font-size:18px;margin:16px 0 8px;line-height:1.4}
+#query-panel-body h3{font-size:16px;margin:14px 0 6px}
+#query-panel-body p{margin:0 0 12px}
+#query-panel-body ul,#query-panel-body ol{padding-left:24px;margin:0 0 12px}
+#query-panel-body li{margin-bottom:4px}
+#query-panel-body code{background:var(--bg-panel);padding:2px 6px;border-radius:4px;font-family:"JetBrains Mono","Fira Code",Consolas,monospace;font-size:13px}
+#query-panel-body pre{background:var(--bg-log);color:var(--text-log);padding:14px 18px;border-radius:8px;overflow-x:auto;font-size:13px;margin:0 0 14px;line-height:1.6}
+#query-panel-body pre code{background:none;padding:0;color:inherit}
+#query-panel-body blockquote{border-left:3px solid var(--accent);margin:0 0 14px;padding:8px 16px;color:var(--text-secondary);background:var(--bg-panel);border-radius:0 8px 8px 0}
+#query-panel-body a.wikilink{color:var(--accent);cursor:pointer;text-decoration:underline;text-decoration-style:dotted}
+#query-panel-body a.wikilink.ghost{color:var(--text-secondary);text-decoration-style:dashed}
+#query-panel-body strong{font-weight:700}
+#query-panel-body em{font-style:italic}
+
 /* Tooltip */
 .tooltip{position:fixed;background:#333;color:#FFF;padding:6px 10px;border-radius:6px;font-size:12px;max-width:260px;z-index:200;pointer-events:none;opacity:0;transition:opacity .15s}
 [data-theme="dark"] .tooltip{background:#555}
@@ -219,6 +244,18 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
         <div id="drawer-body"></div>
         <div id="drawer-tags"></div>
       </div>
+
+      <!-- Query reading panel -->
+      <div id="query-panel-overlay">
+        <div id="query-panel">
+          <div id="query-panel-header">
+            <h2 id="query-panel-question"></h2>
+            <button id="query-panel-close">✕</button>
+          </div>
+          <div id="query-panel-body"></div>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -312,6 +349,7 @@ const State = {
   welcomeDismissed: localStorage.getItem('iwiki_welcome_dismissed') === 'true',
   modelName: '',
   modelLabel: '',
+  lastQuery: '',
   sources: []
 };
 
@@ -360,7 +398,12 @@ const dom = {
   deleteSelectAll: $('#delete-select-all'),
   deleteConfirmBtn: $('#delete-confirm-btn'),
   deleteCancelBtn: $('#delete-cancel-btn'),
-  deleteResult: $('#delete-result')
+  deleteResult: $('#delete-result'),
+  // Query panel
+  queryPanelOverlay: $('#query-panel-overlay'),
+  queryPanelQuestion: $('#query-panel-question'),
+  queryPanelBody: $('#query-panel-body'),
+  queryPanelClose: $('#query-panel-close')
 };
 
 let network = null;
@@ -633,13 +676,20 @@ function appendLog(level, message, ts) {
 
 function showResult(result) {
   if (!result) return;
+
+  // Query answers → large reading panel
+  if (result.answer && State.lastOp === 'query') {
+    showQueryPanel(State.lastQuery || '', result.answer);
+    return;
+  }
+
+  // Other results → sidebar result area
   dom.resultContent.classList.add('visible');
   if (result.answer) {
     dom.resultContent.innerHTML = marked.parse(result.answer);
   } else if (result.report) {
     dom.resultContent.innerHTML = marked.parse(result.report);
   } else if (result.empty_files !== undefined) {
-    // Health check result
     const lines = [];
     if (result.empty_files !== undefined) {
       lines.push(result.empty_files.length === 0 ? '✅ 无空/存根文件' : `⚠️ ${result.empty_files.length} 个空/存根文件`);
@@ -654,6 +704,35 @@ function showResult(result) {
   } else {
     dom.resultContent.innerHTML = `<pre style="font-size:12px;color:var(--text-secondary)">${JSON.stringify(result, null, 2)}</pre>`;
   }
+}
+
+// ── Query panel ─────────────────────────────────────────────────
+function showQueryPanel(question, answer) {
+  dom.queryPanelQuestion.textContent = question || '查询结果';
+  const processed = answer.replace(/\[\[([^\]]+)\]\]/g, '<a class="wikilink" data-page="$1">$1</a>');
+  const html = marked.parse(processed);
+  dom.queryPanelBody.innerHTML = html;
+  // Wire up wikilinks
+  dom.queryPanelBody.querySelectorAll('.wikilink').forEach(a => {
+    a.addEventListener('click', () => {
+      const name = a.dataset.page;
+      const target = graphData.nodes.find(n => n.label === name || n.id === name);
+      if (target && network) {
+        closeQueryPanel();
+        network.selectNodes([target.id]);
+        network.focus(target.id, {scale: 1.5, animation: true});
+        openDrawer(target.id);
+      } else {
+        a.classList.add('ghost');
+        a.title = '此页面尚未创建';
+      }
+    });
+  });
+  dom.queryPanelOverlay.classList.add('show');
+}
+
+function closeQueryPanel() {
+  dom.queryPanelOverlay.classList.remove('show');
 }
 
 function isApiKeyError(msg) {
@@ -795,6 +874,7 @@ function bindEvents() {
   dom.sendBtn.addEventListener('click', () => {
     const q = dom.queryInput.value.trim();
     if (!q) return;
+    State.lastQuery = q;
     executeOperation('query', q);
   });
   dom.queryInput.addEventListener('keydown', e => {
@@ -929,6 +1009,12 @@ function bindEvents() {
     dom.deleteConfirmBtn.disabled = false;
     dom.deleteCancelBtn.disabled = false;
   }
+
+  // Query panel — close on overlay click or X button
+  dom.queryPanelOverlay.addEventListener('click', (e) => {
+    if (e.target === dom.queryPanelOverlay) closeQueryPanel();
+  });
+  dom.queryPanelClose.addEventListener('click', closeQueryPanel);
 
   // API Key dismiss
   dom.apiKeyDismiss.addEventListener('click', () => {

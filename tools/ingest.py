@@ -370,6 +370,8 @@ Return ONLY a valid JSON object with these fields (no markdown fences, no prose 
         print("  ✓ Validation passed — no broken links, all pages indexed")
     print()
 
+    return slug
+
 
 if __name__ == "__main__":
     # Handle --validate-only flag

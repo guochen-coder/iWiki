@@ -84,6 +84,28 @@ def _sanitize_error(e: Exception) -> str:
         return "Claude Code 可能未登录或 API Key 未配置。请在终端运行 claude login，或在 .claude/settings.json 中配置 ANTHROPIC_API_KEY。"
     return msg
 
+SOURCE_MAP_FILE = PROJECT_ROOT / "wiki" / ".source_map.json"
+
+def _load_source_map() -> dict:
+    try:
+        if SOURCE_MAP_FILE.exists():
+            return json.loads(SOURCE_MAP_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+def _save_source_map(slug: str, raw_name: str):
+    mapping = _load_source_map()
+    mapping[slug] = raw_name
+    SOURCE_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SOURCE_MAP_FILE.write_text(json.dumps(mapping, indent=2, ensure_ascii=False))
+
+def _remove_source_map(slug: str):
+    mapping = _load_source_map()
+    mapping.pop(slug, None)
+    SOURCE_MAP_FILE.write_text(json.dumps(mapping, indent=2, ensure_ascii=False))
+
+
 def make_task(status: str = "pending") -> dict:
     tid = uuid.uuid4().hex[:12]
     tasks[tid] = {"task_id": tid, "status": status, "progress": [], "result": None, "error": None}
@@ -138,9 +160,12 @@ async def api_ingest(file: UploadFile = File(...)):
                 await push_progress(tid, "log", level="info", message=f"读取文件: {safe_name}")
                 await push_progress(tid, "progress", step="ingest", message="AI 分析中，可能需要 30-60 秒...")
 
-                # Run ingest in thread pool
+                # Run ingest in thread pool, capture the LLM-generated slug
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, ingest.ingest, str(dest), True)
+                slug = await loop.run_in_executor(None, ingest.ingest, str(dest), True)
+
+                # Map slug → original filename for later lookup (delete, list)
+                _save_source_map(slug, safe_name)
 
                 await push_progress(tid, "log", level="success", message=f"摄入完成: {safe_name}")
 
@@ -346,15 +371,15 @@ async def api_delete_source(source_name: str):
                 if source_page.exists():
                     source_page.unlink()
 
-                # Remove raw file (match by stem, any extension)
-                raw_dir = PROJECT_ROOT / "raw"
-                if raw_dir.exists():
-                    for f in raw_dir.iterdir():
-                        if f.stem == source_name:
-                            f.unlink()
-                            break
+                # Remove raw file using source map (slug → original filename)
+                source_map = _load_source_map()
+                raw_name = source_map.get(source_name, source_name)
+                raw_file = PROJECT_ROOT / "raw" / raw_name
+                if raw_file.exists():
+                    raw_file.unlink()
+                _remove_source_map(source_name)
 
-                await push_progress(tid, "log", level="success", message=f"已删除: {source_name}")
+                await push_progress(tid, "log", level="success", message=f"已删除: {raw_name}")
 
                 # Auto-rebuild graph to remove deleted node
                 await push_progress(tid, "log", level="info", message="开始重建图谱...")
@@ -397,9 +422,17 @@ async def api_sources():
     sources_dir = PROJECT_ROOT / "wiki" / "sources"
     if not sources_dir.exists():
         return JSONResponse([])
+    source_map = _load_source_map()
     files = []
     for f in sorted(sources_dir.glob("*.md")):
-        files.append({"name": f.stem, "path": str(f.relative_to(PROJECT_ROOT)), "created_at": datetime.fromtimestamp(f.stat().st_ctime).isoformat()})
+        slug = f.stem
+        raw_name = source_map.get(slug, slug)
+        files.append({
+            "name": slug,
+            "raw_name": raw_name,
+            "path": str(f.relative_to(PROJECT_ROOT)),
+            "created_at": datetime.fromtimestamp(f.stat().st_ctime).isoformat()
+        })
     return JSONResponse(files)
 
 

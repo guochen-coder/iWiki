@@ -1,6 +1,6 @@
 # iWiki 产品需求文档 (PRD)
 
-> 面向 AI 编码智能体实现。目标读者：Claude Code / AI Agent。
+> 🛠️ 开发文档 · 仅供 AI 开发助手（Claude Code）使用 · 与项目运行无关
 
 ## 1. 产品概述
 

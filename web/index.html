@@ -274,6 +274,25 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
   </div>
 </div>
 
+<!-- Delete Modal -->
+<div class="modal-overlay" id="delete-modal" style="display:none">
+  <div class="modal">
+    <h2>🗑️ 删除文档</h2>
+    <p style="font-size:13px;color:var(--text-secondary)">勾选要删除的文档，此操作不可撤销。</p>
+    <div style="margin-top:12px;max-height:300px;overflow-y:auto" id="delete-list"></div>
+    <div style="margin-top:8px">
+      <label style="font-size:13px;cursor:pointer;color:var(--text-secondary)">
+        <input type="checkbox" id="delete-select-all"> 全选 / 取消全选
+      </label>
+    </div>
+    <div id="delete-result" style="margin-top:8px;font-size:13px"></div>
+    <div class="btn-row" style="margin-top:14px">
+      <button class="btn-secondary" id="delete-cancel-btn">取消</button>
+      <button class="btn-primary" id="delete-confirm-btn" style="background:var(--error)">确认删除</button>
+    </div>
+  </div>
+</div>
+
 <!-- Hidden file input -->
 <input type="file" id="file-input" accept=".md,.txt,.csv,.tsv,.json,.xml,.yaml,.yml" style="display:none">
 
@@ -334,7 +353,14 @@ const dom = {
   settingsTestResult: $('#settings-test-result'),
   settingsTestBtn: $('#settings-test-btn'),
   settingsSaveBtn: $('#settings-save-btn'),
-  apiKeyToSettings: $('#api-key-to-settings')
+  apiKeyToSettings: $('#api-key-to-settings'),
+  // Delete modal
+  deleteModal: $('#delete-modal'),
+  deleteList: $('#delete-list'),
+  deleteSelectAll: $('#delete-select-all'),
+  deleteConfirmBtn: $('#delete-confirm-btn'),
+  deleteCancelBtn: $('#delete-cancel-btn'),
+  deleteResult: $('#delete-result')
 };
 
 let network = null;
@@ -820,6 +846,7 @@ function bindEvents() {
   });
 
   // Delete button
+  // Delete button — open modal
   document.getElementById('delete-btn').addEventListener('click', async () => {
     try {
       const resp = await fetch('/api/sources');
@@ -828,20 +855,70 @@ function bindEvents() {
         appendLog('warning', '没有可删除的文档');
         return;
       }
-      const name = prompt('输入要删除的文档名:\n' + sources.map(s => s.name).join('\n'));
-      if (!name) return;
-      if (confirm(`确定要删除「${name}」吗？此操作不可撤销。`)) {
-        await executeOperation('delete', name);
-        setTimeout(() => {
-          if (confirm('是否重建知识图谱以反映最新状态？')) {
-            executeOperation('graph-rebuild');
-          }
-        }, 1000);
-      }
+      // Populate checkbox list
+      dom.deleteList.innerHTML = sources.map(s =>
+        `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:14px;cursor:pointer;border-bottom:1px solid var(--border)">
+          <input type="checkbox" class="delete-check" value="${escapeHtml(s.name)}">
+          <span>${escapeHtml(s.raw_name || s.name)}</span>
+        </label>`
+      ).join('');
+      dom.deleteSelectAll.checked = false;
+      dom.deleteResult.textContent = '';
+      dom.deleteConfirmBtn.disabled = false;
+      dom.deleteCancelBtn.disabled = false;
+      dom.deleteModal.style.display = 'flex';
     } catch(e) {
       appendLog('error', '获取文档列表失败');
     }
   });
+
+  // Delete modal — close on overlay click
+  dom.deleteModal.addEventListener('click', (e) => {
+    if (e.target === dom.deleteModal) closeDeleteModal();
+  });
+
+  // Delete modal — cancel
+  dom.deleteCancelBtn.addEventListener('click', closeDeleteModal);
+
+  // Delete modal — select all
+  dom.deleteSelectAll.addEventListener('change', () => {
+    const checked = dom.deleteSelectAll.checked;
+    dom.deleteList.querySelectorAll('.delete-check').forEach(cb => cb.checked = checked);
+  });
+
+  // Delete modal — confirm
+  dom.deleteConfirmBtn.addEventListener('click', async () => {
+    const checked = dom.deleteList.querySelectorAll('.delete-check:checked');
+    if (!checked.length) {
+      dom.deleteResult.innerHTML = '<span style="color:var(--error)">请至少勾选一个文档</span>';
+      return;
+    }
+    const names = Array.from(checked).map(cb => cb.value);
+    dom.deleteConfirmBtn.disabled = true;
+    dom.deleteCancelBtn.disabled = true;
+    dom.deleteResult.textContent = '删除中…';
+
+    // Delete sequentially (server serializes operations)
+    for (let i = 0; i < names.length; i++) {
+      dom.deleteResult.textContent = `删除中 (${i + 1}/${names.length})…`;
+      await executeOperation('delete', names[i]);
+      // Wait for operation to complete
+      while (State.isExecuting) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+    dom.deleteResult.innerHTML = `<span style="color:var(--success)">✅ 已删除 ${names.length} 个文档</span>`;
+    // Refresh graph
+    await loadGraph();
+    if (network) renderGraph();
+    setTimeout(closeDeleteModal, 1500);
+  });
+
+  function closeDeleteModal() {
+    dom.deleteModal.style.display = 'none';
+    dom.deleteConfirmBtn.disabled = false;
+    dom.deleteCancelBtn.disabled = false;
+  }
 
   // API Key dismiss
   dom.apiKeyDismiss.addEventListener('click', () => {

@@ -733,6 +733,10 @@ async function executeOperation(op, extra) {
       resp = await callApi('DELETE', `/api/sources/${extra}`);
       break;
     }
+    case 'batch-delete': {
+      resp = await callApi('POST', '/api/sources/batch-delete', {names: extra});
+      break;
+    }
   }
 
   if (!resp.ok) {
@@ -886,7 +890,7 @@ function bindEvents() {
     dom.deleteList.querySelectorAll('.delete-check').forEach(cb => cb.checked = checked);
   });
 
-  // Delete modal — confirm
+  // Delete modal — confirm (batch)
   dom.deleteConfirmBtn.addEventListener('click', async () => {
     const checked = dom.deleteList.querySelectorAll('.delete-check:checked');
     if (!checked.length) {
@@ -896,19 +900,14 @@ function bindEvents() {
     const names = Array.from(checked).map(cb => cb.value);
     dom.deleteConfirmBtn.disabled = true;
     dom.deleteCancelBtn.disabled = true;
-    dom.deleteResult.textContent = '删除中…';
+    dom.deleteResult.textContent = `删除中 (${names.length} 个文档)…`;
 
-    // Delete sequentially (server serializes operations)
-    for (let i = 0; i < names.length; i++) {
-      dom.deleteResult.textContent = `删除中 (${i + 1}/${names.length})…`;
-      await executeOperation('delete', names[i]);
-      // Wait for operation to complete
-      while (State.isExecuting) {
-        await new Promise(r => setTimeout(r, 500));
-      }
+    await executeOperation('batch-delete', names);
+    // Wait for operation to complete
+    while (State.isExecuting) {
+      await new Promise(r => setTimeout(r, 500));
     }
     dom.deleteResult.innerHTML = `<span style="color:var(--success)">✅ 已删除 ${names.length} 个文档</span>`;
-    // Refresh graph
     await loadGraph();
     if (network) renderGraph();
     setTimeout(closeDeleteModal, 1500);

@@ -354,6 +354,66 @@ async def api_graph(body: dict):
     return JSONResponse(task)
 
 
+@app.post("/api/sources/batch-delete")
+async def api_batch_delete(body: dict):
+    """Delete multiple documents at once, rebuild graph once at the end."""
+    if op_lock.locked():
+        return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
+
+    names = body.get("names", [])
+    if not names:
+        return JSONResponse({"error": "请提供要删除的文档名列表"}, status_code=400)
+
+    task = make_task("running")
+    tid = task["task_id"]
+
+    async def run():
+        async with op_lock:
+            try:
+                deleted = []
+                source_map = _load_source_map()
+                for source_name in names:
+                    source_page = PROJECT_ROOT / "wiki" / "sources" / f"{source_name}.md"
+                    raw_name = source_map.get(source_name, source_name)
+                    raw_file = PROJECT_ROOT / "raw" / raw_name
+                    if source_page.exists():
+                        source_page.unlink()
+                    if raw_file.exists():
+                        raw_file.unlink()
+                    source_map.pop(source_name, None)
+                    deleted.append(raw_name)
+                # Persist cleaned source map
+                SOURCE_MAP_FILE.write_text(json.dumps(source_map, indent=2, ensure_ascii=False))
+
+                await push_progress(tid, "log", level="success", message=f"已删除 {len(deleted)} 个文档")
+
+                # Rebuild graph once
+                await push_progress(tid, "log", level="info", message="开始重建图谱...")
+                await push_progress(tid, "progress", step="graph", message="提取 wikilinks 中...")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
+                )
+                graph_json = PROJECT_ROOT / "graph" / "graph.json"
+                if graph_json.exists():
+                    with open(graph_json) as gf:
+                        gd = json.load(gf)
+                    n_nodes = len(gd.get("nodes", []))
+                    n_edges = len(gd.get("edges", []))
+                    await push_progress(tid, "log", level="success", message=f"图谱已更新: {n_nodes} 节点, {n_edges} 边")
+
+                await push_progress(tid, "complete", result={"deleted": deleted})
+                tasks[tid]["status"] = "completed"
+                tasks[tid]["result"] = {"deleted": deleted}
+            except Exception as e:
+                await push_progress(tid, "log", level="error", message=f"批量删除失败: {str(e)}")
+                tasks[tid]["status"] = "failed"
+                tasks[tid]["error"] = str(e)
+
+    asyncio.create_task(run())
+    return JSONResponse(task)
+
+
 @app.delete("/api/sources/{source_name}")
 async def api_delete_source(source_name: str):
     """Delete an ingested document."""

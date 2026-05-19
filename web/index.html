@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iWiki — 个人知识库</title>
+<script src="https://unpkg.com/vis-network@9.1.6/dist/vis-network.min.js"></script>
+<script src="https://unpkg.com/marked@12.0.0/marked.min.js"></script>
+<style>
+/* ── Reset & Variables ──────────────────────────────────────── */
+:root {
+  --bg:#FAFAFA; --bg-sidebar:#FFF; --bg-panel:#F5F5F5;
+  --bg-query:rgba(255,255,255,0.85); --bg-log:#1E1E1E;
+  --text:#1A1A1A; --text-secondary:#666; --text-log:#D4D4D4;
+  --border:#E0E0E0; --accent:#2563EB; --accent-hover:#1D4ED8;
+  --success:#16A34A; --warning:#F59E0B; --error:#DC2626;
+  --disabled:#D4D4D4; --radius:8px;
+}
+[data-theme="dark"] {
+  --bg:#0D1117; --bg-sidebar:#161B22; --bg-panel:#161B22;
+  --bg-query:rgba(22,27,34,0.9); --bg-log:#0D1117;
+  --text:#E6EDF3; --text-secondary:#8B949E; --text-log:#C9D1D9;
+  --border:#30363D;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);height:100vh;overflow:hidden;transition:background-color .3s,color .3s}
+button{cursor:pointer;border:none;font-family:inherit;transition:background-color .15s,opacity .15s}
+button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
+
+/* ── Layout ─────────────────────────────────────────────────── */
+#app{display:flex;flex-direction:column;height:100vh}
+#query-bar{height:64px;display:flex;align-items:center;justify-content:center;gap:8px;padding:0 16px;z-index:100;position:relative}
+#query-bar::before{content:'';position:absolute;inset:0;background:var(--bg-query);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:-1}
+#query-input{width:100%;max-width:700px;min-height:40px;max-height:120px;padding:8px 12px;border:1px solid var(--border);border-radius:12px;font-size:15px;font-family:inherit;background:var(--bg-sidebar);color:var(--text);resize:none;outline:none;line-height:1.5;field-sizing:content}
+#query-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,0.15)}
+#query-input:disabled{opacity:.5}
+#send-btn{flex-shrink:0;height:40px;padding:0 20px;background:var(--accent);color:#FFF;border-radius:8px;font-size:15px;font-weight:600;white-space:nowrap}
+#send-btn:hover:not(:disabled){background:var(--accent-hover)}
+#main{display:flex;flex:1;overflow:hidden}
+
+/* Sidebar */
+#sidebar{width:320px;flex-shrink:0;background:var(--bg-sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;transition:width .25s ease-out,background-color .3s;position:relative}
+#sidebar.collapsed{width:0;border-right:none}
+#sidebar.collapsed #sidebar-top,
+#sidebar.collapsed #sidebar-log{overflow:hidden}
+#sidebar-top{display:flex;flex-direction:column;gap:6px;padding:12px 12px 0;flex-shrink:0}
+#sidebar-log{flex:1;display:flex;flex-direction:column;overflow:hidden;padding:8px 12px 12px;min-height:120px}
+#sidebar-log .log-header{font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:4px;flex-shrink:0}
+#sidebar-log .log-inner{flex:1;overflow-y:auto;background:var(--bg-log);border-radius:6px;padding:8px 10px;font-family:"JetBrains Mono","Fira Code",Consolas,monospace;font-size:11px;line-height:1.6;color:var(--text-log)}
+#sidebar-log .log-inner .ts{color:var(--text-secondary);margin-right:6px}
+#sidebar-log .log-inner .info{color:#D4D4D4}
+#sidebar-log .log-inner .success{color:var(--success)}
+#sidebar-log .log-inner .warning{color:var(--warning)}
+#sidebar-log .log-inner .error{color:var(--error)}
+
+/* Toggle */
+#sidebar-toggle{position:absolute;top:50%;right:-26px;width:26px;height:52px;border-radius:0 8px 8px 0;background:var(--bg-sidebar);border:1px solid var(--border);border-left:none;color:var(--text-secondary);font-size:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:15;transform:translateY(-50%);transition:right .25s ease-out,opacity .25s}
+#sidebar.collapsed #sidebar-toggle{right:-26px;border-radius:8px 0 0 8px;border-left:1px solid var(--border);border-right:none}
+.side-btn{display:flex;align-items:center;gap:10px;height:48px;padding:0 14px;background:transparent;color:var(--text);border-radius:var(--radius);font-size:15px;font-weight:600;text-align:left;position:relative}
+.side-btn:hover:not(:disabled){background:var(--bg-panel)}
+.side-btn .en{font-size:11px;color:var(--text-secondary);font-weight:400;margin-left:auto}
+.side-btn .icon{width:22px;height:22px;flex-shrink:0;opacity:.7}
+.side-btn.executing{background:var(--accent);color:#FFF}
+.side-btn.executing .icon{animation:spin 1s linear infinite;opacity:1}
+.side-btn.executing .en{color:rgba(255,255,255,.7)}
+.help-icon{width:14px;height:14px;border-radius:50%;border:1px solid var(--text-secondary);color:var(--text-secondary);font-size:10px;display:inline-flex;align-items:center;justify-content:center;cursor:help;opacity:.5;flex-shrink:0;line-height:1}
+.help-icon:hover{opacity:1}
+.divider{height:1px;background:var(--border);margin:8px 0}
+#sidebar-bottom{margin-top:auto;display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--text-secondary)}
+#sidebar-bottom button{font-size:13px;padding:8px 12px;background:transparent;color:var(--text-secondary);border-radius:6px;text-align:left}
+#sidebar-bottom button:hover{background:var(--bg-panel)}
+#theme-toggle{font-size:13px;padding:8px 12px;background:transparent;color:var(--text-secondary);border-radius:6px;text-align:left;display:flex;align-items:center;gap:6px}
+#theme-toggle:hover{background:var(--bg-panel)}
+#model-info{font-size:11px;padding:4px 12px;opacity:.6}
+
+/* Graph area */
+#graph-area{flex:1;position:relative;background:var(--bg);overflow:hidden}
+#graph-canvas{width:100%;height:100%}
+#empty-state{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
+#empty-state .illustration{font-size:64px;margin-bottom:16px;opacity:.5}
+#empty-state h2{font-size:20px;margin-bottom:8px;color:var(--text)}
+#empty-state p{color:var(--text-secondary)}
+#graph-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text-secondary)}
+/* Drawer */
+#drawer{position:absolute;top:0;right:0;width:360px;height:100%;background:var(--bg-sidebar);box-shadow:-4px 0 16px rgba(0,0,0,.12);transform:translateX(100%);transition:transform .25s ease-out;z-index:50;display:flex;flex-direction:column;overflow-y:auto}
+#drawer.open{transform:translateX(0)}
+#drawer-header{padding:16px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:8px}
+#drawer-header h3{flex:1;font-size:18px;margin:0}
+#drawer-close{width:28px;height:28px;border-radius:6px;background:transparent;color:var(--text);font-size:18px;display:flex;align-items:center;justify-content:center}
+#drawer-close:hover{background:var(--bg-panel)}
+#drawer-body{padding:16px;flex:1;overflow-y:auto;line-height:1.7}
+#drawer-body a.wikilink{color:var(--accent);cursor:pointer;text-decoration:underline;text-decoration-style:dotted}
+#drawer-body a.wikilink.ghost{color:var(--text-secondary);text-decoration-style:dashed;cursor:help}
+#drawer-tags{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px}
+#drawer-tags span{padding:2px 10px;background:var(--bg-panel);border-radius:12px;font-size:12px;cursor:pointer}
+#drawer-tags span:hover{background:var(--accent);color:#FFF}
+.tag-source{color:#16A34A}.tag-entity{color:#2563EB}.tag-concept{color:#F59E0B}.tag-synthesis{color:#8B5CF6}
+
+/* Queue bar */
+#queue-bar{padding:4px 12px;font-size:11px;background:var(--bg-sidebar);display:none;flex-shrink:0}
+#queue-bar.visible{display:block}
+#queue-bar .q-current{color:var(--accent)}
+#queue-bar .q-pending{color:var(--text-secondary)}
+
+/* Result content (query answers, lint reports) shown above log */
+#result-content{padding:8px 12px;overflow-y:auto;display:none;line-height:1.6;flex-shrink:0;max-height:40%;font-size:13px;border-bottom:1px solid var(--border)}
+#result-content.visible{display:block}
+#result-content h1,#result-content h2,#result-content h3{font-size:15px;margin:6px 0 3px}
+#result-content ul,#result-content ol{padding-left:18px}
+#result-content code{background:var(--bg-panel);padding:1px 4px;border-radius:3px;font-family:monospace}
+#result-content pre{background:var(--bg-log);color:var(--text-log);padding:8px;border-radius:4px;overflow-x:auto;font-size:11px}
+#result-content pre code{background:none;padding:0}
+
+/* Tooltip */
+.tooltip{position:fixed;background:#333;color:#FFF;padding:6px 10px;border-radius:6px;font-size:12px;max-width:260px;z-index:200;pointer-events:none;opacity:0;transition:opacity .15s}
+[data-theme="dark"] .tooltip{background:#555}
+.tooltip.show{opacity:1}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;display:flex;align-items:center;justify-content:center}
+.modal{background:var(--bg-sidebar);border-radius:12px;padding:28px;max-width:480px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.2);animation:modal-in .2s ease-out}
+@keyframes modal-in{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
+.modal h2{font-size:18px;margin-bottom:12px}
+.modal p{margin-bottom:8px;font-size:14px;line-height:1.6;color:var(--text-secondary)}
+.modal .btn-row{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.modal .btn-row button{padding:8px 18px;border-radius:6px;font-size:14px}
+.modal .btn-primary{background:var(--accent);color:#FFF}
+.modal .btn-primary:hover{background:var(--accent-hover)}
+.modal .btn-secondary{background:var(--bg-panel);color:var(--text)}
+.modal .btn-secondary:hover{background:var(--border)}
+.modal label{font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:12px;color:var(--text-secondary)}
+
+/* Spin */
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* Processing indicator */
+#processing-indicator{display:none;align-items:center;gap:8px;padding:6px 14px;font-size:12px;color:var(--accent)}
+#processing-indicator.visible{display:flex}
+#processing-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+#processing-text{animation:pulse 2s ease-in-out infinite}
+
+/* API Key missing state */
+#api-key-page{display:none;position:fixed;inset:0;background:var(--bg);z-index:999;align-items:center;justify-content:center}
+#api-key-page.show{display:flex}
+.api-key-card{text-align:center;max-width:460px;padding:40px}
+.api-key-card .warn-icon{font-size:48px;margin-bottom:16px}
+.api-key-card h2{margin-bottom:8px}
+.api-key-card p{color:var(--text-secondary);margin-bottom:16px;line-height:1.6}
+.api-key-card .copy-cmd{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:var(--bg-log);color:var(--text-log);border-radius:6px;font-family:monospace;font-size:13px;cursor:pointer;border:1px solid var(--border)}
+.api-key-card .copy-cmd:hover{background:var(--bg-panel)}
+.api-key-card .test-btn{padding:6px 14px;font-size:13px;background:var(--bg-panel);color:var(--text);border-radius:6px;margin-left:8px}
+.api-key-card .test-btn:hover{background:var(--border)}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- Query Bar -->
+  <div id="query-bar">
+    <textarea id="query-input" placeholder="向你的知识库提问... 例如：这些文档主要讲了什么？" rows="1" maxlength="500"></textarea>
+    <button id="send-btn" disabled>发送</button>
+  </div>
+
+  <div id="main">
+    <!-- Sidebar -->
+    <div id="sidebar">
+      <button id="sidebar-toggle" title="折叠侧边栏">◀</button>
+      <div id="sidebar-top">
+        <button class="side-btn" data-op="ingest">
+          <span class="icon">📄</span> 摄入文档 <span class="en">ingest</span>
+          <span class="help-icon" data-help="将本地文档导入知识库。支持 Markdown、TXT 等格式。此操作消耗 API 调用。预计消耗：短文约 2k tokens。">?</span>
+        </button>
+        <button class="side-btn" data-op="lint">
+          <span class="icon">🔍</span> 内容检查 <span class="en">lint</span>
+          <span class="help-icon" data-help="检查知识库的内容质量：是否存在矛盾、孤立页面等。消耗 API 调用，建议定期运行。">?</span>
+        </button>
+        <button class="side-btn" data-op="graph-rebuild">
+          <span class="icon">🔄</span> 重建图谱 <span class="en">graph</span>
+          <span class="help-icon" data-help="重新扫描所有 wiki 页面，构建最新的知识关系图谱。消耗较多 API 调用。预估消耗：每页面约 1-2k tokens。">?</span>
+        </button>
+        <button class="side-btn" data-op="health" style="font-size:14px;height:40px;font-weight:500">
+          <span class="icon" style="width:18px;height:18px">❤️</span> 健康检查 <span class="en">health</span>
+          <span class="help-icon" data-help="快速检查知识库的结构完整性（空文件、索引同步、日志覆盖）。完全免费，零 API 消耗。">?</span>
+        </button>
+        <div class="divider"></div>
+        <div id="sidebar-bottom">
+          <button id="delete-btn" data-op="delete" style="color:var(--error);opacity:.7">删除文档 <span style="font-size:11px;opacity:.6">delete</span></button>
+          <button id="settings-btn">⚙️ 设置</button>
+          <button id="theme-toggle"><span id="theme-icon">🌙</span> 暗色模式</button>
+          <div id="model-info">模型: 加载中...</div>
+        </div>
+      </div>
+
+      <!-- Log + result embedded in sidebar bottom -->
+      <div id="sidebar-log">
+        <div class="log-header">📋 操作日志</div>
+        <div id="queue-bar"></div>
+        <div id="processing-indicator"><span id="processing-dot"></span><span id="processing-text">处理中</span></div>
+        <div id="result-content"></div>
+        <div class="log-inner" id="log-area"><div style="color:var(--text-secondary)">等待操作...</div></div>
+      </div>
+    </div>
+
+    <!-- Graph Area -->
+    <div id="graph-area">
+      <div id="graph-canvas"></div>
+      <div id="empty-state">
+        <div class="illustration">🗺️</div>
+        <h2>你的知识库还是空的</h2>
+        <p>点击左侧「摄入文档」导入你的第一篇文档</p>
+      </div>
+      <div id="graph-loading" style="display:none">加载图谱数据...</div>
+      <div id="drawer">
+        <div id="drawer-header">
+          <h3 id="drawer-title"></h3>
+          <button id="drawer-close">✕</button>
+        </div>
+        <div id="drawer-body"></div>
+        <div id="drawer-tags"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- API Key Missing Page -->
+<div id="api-key-page">
+  <div class="api-key-card">
+    <div class="warn-icon">🔑</div>
+    <h2>未检测到 API Key</h2>
+    <p>你的知识库需要 AI 来理解文档和回答问题。<br>请在设置中配置 API Key。</p>
+    <div style="margin-top:12px">
+      <button class="btn-primary" id="api-key-to-settings" style="padding:8px 20px;font-size:14px">⚙️ 去设置</button>
+    </div>
+    <button id="api-key-dismiss" style="margin-top:12px;padding:6px 14px;font-size:13px;background:var(--bg-panel);color:var(--text);border-radius:6px">关闭提示</button>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal" style="display:none">
+  <div class="modal">
+    <h2>⚙️ API 设置</h2>
+    <p style="font-size:13px;color:var(--text-secondary)">配置后即时生效，无需重启服务。</p>
+    <div style="margin-top:14px">
+      <label style="font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px">提供商</label>
+      <select id="settings-provider" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg);color:var(--text);box-sizing:border-box">
+        <option value="anthropic">Anthropic（官方）</option>
+        <option value="deepseek">DeepSeek（Anthropic 兼容端点）</option>
+        <option value="custom">自定义端点…</option>
+      </select>
+    </div>
+    <div style="margin-top:12px">
+      <label style="font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px">模型</label>
+      <select id="settings-model" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg);color:var(--text);box-sizing:border-box">
+        <option value="anthropic/claude-sonnet-4-6">Claude Sonnet 4</option>
+        <option value="anthropic/claude-opus-4-7">Claude Opus 4</option>
+        <option value="__custom__">自定义模型名…</option>
+      </select>
+      <input type="text" id="settings-model-custom" placeholder="输入 litellm 模型名" style="display:none;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:monospace;background:var(--bg);color:var(--text);box-sizing:border-box;margin-top:6px">
+    </div>
+    <div style="margin-top:12px" id="settings-base-url-group">
+      <label style="font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px">端点 URL</label>
+      <input type="text" id="settings-base-url" placeholder="https://api.anthropic.com" readonly style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:monospace;background:var(--bg-panel);color:var(--text);box-sizing:border-box">
+    </div>
+    <div style="margin-top:12px">
+      <label style="font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px">API Key</label>
+      <input type="password" id="settings-api-key" placeholder="sk-..." style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;font-family:monospace;background:var(--bg);color:var(--text);box-sizing:border-box">
+    </div>
+    <div id="settings-test-result" style="margin-top:10px;font-size:13px"></div>
+    <div class="btn-row" style="margin-top:14px">
+      <button class="btn-secondary" id="settings-test-btn">🔍 测试连接</button>
+      <button class="btn-primary" id="settings-save-btn">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden file input -->
+<input type="file" id="file-input" accept=".md,.txt" style="display:none">
+
+<!-- Tooltip element -->
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   iWiki Frontend — MVP
+   ══════════════════════════════════════════════════════════════════ */
+
+// ── State ──────────────────────────────────────────────────────
+const State = {
+  isExecuting: false,
+  currentTaskId: null,
+  darkMode: localStorage.getItem('iwiki_dark_mode') === 'true',
+  welcomeDismissed: localStorage.getItem('iwiki_welcome_dismissed') === 'true',
+  modelName: '',
+  modelLabel: '',
+  sources: []
+};
+
+// ── DOM refs ───────────────────────────────────────────────────
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+const dom = {
+  queryInput: $('#query-input'),
+  sendBtn: $('#send-btn'),
+  graphCanvas: $('#graph-canvas'),
+  emptyState: $('#empty-state'),
+  graphLoading: $('#graph-loading'),
+  drawer: $('#drawer'),
+  drawerTitle: $('#drawer-title'),
+  drawerBody: $('#drawer-body'),
+  drawerTags: $('#drawer-tags'),
+  drawerClose: $('#drawer-close'),
+  logArea: $('#log-area'),
+  resultContent: $('#result-content'),
+  queueBar: $('#queue-bar'),
+  apiKeyPage: $('#api-key-page'),
+  fileInput: $('#file-input'),
+  tooltip: $('#tooltip'),
+  themeToggle: $('#theme-toggle'),
+  themeIcon: $('#theme-icon'),
+  modelInfo: $('#model-info'),
+  processingIndicator: $('#processing-indicator'),
+  apiKeyDismiss: $('#api-key-dismiss'),
+  // Settings modal
+  settingsBtn: $('#settings-btn'),
+  settingsModal: $('#settings-modal'),
+  settingsProvider: $('#settings-provider'),
+  settingsApiKey: $('#settings-api-key'),
+  settingsModel: $('#settings-model'),
+  settingsModelCustom: $('#settings-model-custom'),
+  settingsBaseUrl: $('#settings-base-url'),
+  settingsBaseUrlGroup: $('#settings-base-url-group'),
+  settingsTestResult: $('#settings-test-result'),
+  settingsTestBtn: $('#settings-test-btn'),
+  settingsSaveBtn: $('#settings-save-btn'),
+  apiKeyToSettings: $('#api-key-to-settings')
+};
+
+let network = null;
+let graphData = {nodes: [], edges: []};
+let ws = null;
+
+// Model value → display label mapping (and reverse lookup for provider)
+const MODEL_PRESETS = {
+  anthropic: [
+    {value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4'},
+    {value: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4'},
+  ],
+  deepseek: [
+    {value: 'anthropic/claude-sonnet-4-6', label: 'DeepSeek V4 Flash'},
+    {value: 'anthropic/claude-opus-4-7', label: 'DeepSeek V4 Pro'},
+  ],
+  custom: [
+    {value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4'},
+    {value: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4'},
+  ]
+};
+
+function getModelLabel(modelValue, baseUrl) {
+  // Determine provider from base_url
+  let provider = 'anthropic';
+  if (baseUrl === 'https://api.deepseek.com/anthropic') provider = 'deepseek';
+  else if (baseUrl) provider = 'custom';
+  // Look up label
+  const presets = MODEL_PRESETS[provider] || MODEL_PRESETS.anthropic;
+  for (const m of presets) {
+    if (m.value === modelValue) return m.label;
+  }
+  return modelValue; // fallback: show raw value
+}
+
+// ── Init ───────────────────────────────────────────────────────
+async function init() {
+  if (State.darkMode) {
+    document.documentElement.dataset.theme = 'dark';
+    dom.themeIcon.textContent = '☀️';
+  }
+
+  try {
+    const resp = await fetch('/api/settings');
+    if (resp.ok) {
+      const data = await resp.json();
+      State.modelName = data.model;
+      State.modelLabel = getModelLabel(data.model, data.base_url || '');
+      State.hasApiKey = data.has_key;
+      dom.modelInfo.textContent = `模型: ${State.modelLabel || data.model}`;
+      if (data.has_key) {
+        dom.apiKeyPage.classList.remove('show');
+      }
+    }
+  } catch(e) {
+    dom.modelInfo.textContent = '模型: 未知';
+  }
+
+  // Load graph
+  await loadGraph();
+
+  // Enable/disable query bar based on whether knowledge base has data
+  const hasDocs = graphData.nodes && graphData.nodes.length > 0;
+  dom.queryInput.disabled = !hasDocs;
+  dom.sendBtn.disabled = !hasDocs;
+  if (!hasDocs) {
+    dom.queryInput.placeholder = '请先摄入文档后再提问';
+  }
+
+  // Check welcome modal
+  if (!State.welcomeDismissed && (!graphData.nodes || graphData.nodes.length === 0)) {
+    showWelcomeModal();
+  }
+
+  bindEvents();
+}
+
+// ── Graph ──────────────────────────────────────────────────────
+async function loadGraph() {
+  try {
+    const resp = await fetch('/api/graph-data');
+    if (resp.ok) {
+      graphData = await resp.json();
+      if (graphData.nodes && graphData.nodes.length > 0) {
+        renderGraph();
+        dom.emptyState.style.display = 'none';
+      } else {
+        dom.emptyState.style.display = 'flex';
+      }
+    }
+  } catch(e) {
+    dom.emptyState.style.display = 'flex';
+  }
+}
+
+function renderGraph() {
+  const nodes = graphData.nodes.map(n => ({
+    id: n.id,
+    label: n.label || n.id,
+    value: Math.max(5, (n.value || 1) * 3),
+    color: n.color || getNodeColor(n.type),
+    title: `<b>${n.label || n.id}</b><br>类型: ${n.type || 'unknown'}`
+  }));
+
+  const edges = graphData.edges.map(e => ({
+    id: e.id,
+    from: e.from || e.source,
+    to: e.to || e.target,
+    color: {color: e.type === 'INFERRED' ? '#F59E0B' : e.type === 'AMBIGUOUS' ? '#CCC' : '#999'},
+    dashes: e.type !== 'EXTRACTED',
+    title: `${e.type || 'EXTRACTED'} (置信度: ${e.confidence || 'N/A'})`
+  }));
+
+  const container = dom.graphCanvas;
+  const data = {nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges)};
+  const fontColor = State.darkMode ? '#E6EDF3' : '#333';
+  const options = {
+    physics: {stabilization: {iterations: 100}, barnesHut: {gravitationalConstant: -2000}},
+    nodes: {font: {color: fontColor}, shape: 'dot', size: 10},
+    edges: {smooth: {type: 'continuous'}, width: 1},
+    interaction: {hover: true, tooltipDelay: 200, navigationButtons: false, keyboard: false}
+  };
+
+  network = new vis.Network(container, data, options);
+
+  network.on('click', function(params) {
+    if (params.nodes.length > 0) {
+      openDrawer(params.nodes[0]);
+    }
+  });
+
+  dom.emptyState.style.display = 'none';
+}
+
+function getNodeColor(type) {
+  const map = {source: '#16A34A', entity: '#2563EB', concept: '#F59E0B', synthesis: '#8B5CF6'};
+  return map[type] || '#999';
+}
+
+function openDrawer(nodeId) {
+  const node = graphData.nodes.find(n => n.id === nodeId);
+  if (!node) return;
+  dom.drawerTitle.textContent = node.label || node.id;
+  const mdContent = node.markdown || node.content || '';
+  dom.drawerBody.innerHTML = mdContent
+    ? marked.parse(mdContent.replace(/\[\[([^\]]+)\]\]/g, '<a class="wikilink" data-page="$1">$1</a>'))
+    : '<p style="color:var(--text-secondary)">暂无内容</p>';
+  dom.drawerTags.innerHTML = (node.related || []).map(r =>
+    `<span class="tag-${node.type || 'source'}" data-node="${r}">${r}</span>`
+  ).join('');
+  dom.drawer.classList.add('open');
+
+  // Wikilink clicks
+  dom.drawerBody.querySelectorAll('.wikilink').forEach(a => {
+    a.addEventListener('click', () => {
+      const name = a.dataset.page;
+      const target = graphData.nodes.find(n => n.label === name || n.id === name);
+      if (target) {
+        network.selectNodes([target.id]);
+        network.focus(target.id, {scale: 1.5, animation: true});
+        openDrawer(target.id);
+      } else {
+        a.classList.add('ghost');
+        a.title = '此页面尚未创建';
+      }
+    });
+  });
+
+  // Tag clicks
+  dom.drawerTags.querySelectorAll('span').forEach(s => {
+    s.addEventListener('click', () => {
+      const name = s.dataset.node;
+      const target = graphData.nodes.find(n => n.id === name || n.label === name);
+      if (target) {
+        network.selectNodes([target.id]);
+        network.focus(target.id, {scale: 1.5, animation: true});
+      }
+    });
+  });
+}
+
+// ── API calls ──────────────────────────────────────────────────
+async function callApi(method, path, body = null) {
+  const opts = {method, headers: {}};
+  if (body instanceof FormData) {
+    opts.body = body;
+  } else if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  return fetch(path, opts);
+}
+
+function connectWS(taskId) {
+  if (ws) { try { ws.close(); } catch(e) {} }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/progress/${taskId}`);
+
+  // Polling fallback: check task status every 3s in case WebSocket misses complete/error
+  const pollInterval = setInterval(async () => {
+    try {
+      const resp = await fetch(`/api/task/${taskId}`);
+      const task = await resp.json();
+      if (task.status === 'completed') {
+        clearInterval(pollInterval);
+        appendLog('success', '操作完成');
+        showResult(task.result);
+        onOperationDone();
+        if (State.lastOp === 'ingest' || State.lastOp === 'graph-rebuild') {
+          loadGraph().then(() => { if (network) renderGraph(); });
+        }
+      } else if (task.status === 'failed') {
+        clearInterval(pollInterval);
+        appendLog('error', task.error || '操作失败');
+        onOperationDone();
+      }
+    } catch(e) { /* ignore poll errors */ }
+  }, 3000);
+
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    switch (msg.type) {
+      case 'progress':
+        break;
+      case 'log':
+        appendLog(msg.level || 'info', msg.message, msg.timestamp);
+        break;
+      case 'complete':
+        clearInterval(pollInterval);
+        appendLog('success', '操作完成');
+        showResult(msg.result);
+        onOperationDone();
+        // Refresh graph after ingest/graph-rebuild
+        if (State.lastOp === 'ingest' || State.lastOp === 'graph-rebuild') {
+          loadGraph().then(() => { if (network) renderGraph(); });
+        }
+        break;
+      case 'error':
+        clearInterval(pollInterval);
+        appendLog('error', msg.message || '未知错误');
+        if (isApiKeyError(msg.message)) showApiKeyError(msg.message);
+        onOperationDone();
+        break;
+      case 'ping':
+        break;
+    }
+  };
+
+  ws.onclose = (event) => {
+    clearInterval(pollInterval);
+    if (!event.wasClean && State.isExecuting) {
+      // Reconnect with backoff
+      setTimeout(() => {
+        if (State.currentTaskId && State.isExecuting) {
+          connectWS(State.currentTaskId);
+        }
+      }, 2000);
+    }
+  };
+}
+
+// ── UI helpers ─────────────────────────────────────────────────
+function appendLog(level, message, ts) {
+  const time = ts || new Date().toLocaleTimeString('zh-CN', {hour12: false});
+  const div = document.createElement('div');
+  div.innerHTML = `<span class="ts">[${time}]</span><span class="${level}">${message}</span>`;
+  dom.logArea.appendChild(div);
+  dom.logArea.scrollTop = dom.logArea.scrollHeight;
+}
+
+function showResult(result) {
+  if (!result) return;
+  dom.resultContent.classList.add('visible');
+  if (result.answer) {
+    dom.resultContent.innerHTML = marked.parse(result.answer);
+  } else if (result.report) {
+    dom.resultContent.innerHTML = marked.parse(result.report);
+  } else if (result.empty_files !== undefined) {
+    // Health check result
+    const lines = [];
+    if (result.empty_files !== undefined) {
+      lines.push(result.empty_files.length === 0 ? '✅ 无空/存根文件' : `⚠️ ${result.empty_files.length} 个空/存根文件`);
+    }
+    if (result.index_sync) {
+      lines.push(result.index_sync.missing_from_index?.length === 0 ? '✅ 索引同步正常' : `⚠️ 索引不同步: ${result.index_sync.missing_from_index?.length || 0} 个`);
+    }
+    if (result.log_coverage) {
+      lines.push(result.log_coverage.length === 0 ? '✅ 日志覆盖完整' : `⚠️ ${result.log_coverage.length} 个未覆盖`);
+    }
+    dom.resultContent.innerHTML = lines.map(l => `<p>${l}</p>`).join('');
+  } else {
+    dom.resultContent.innerHTML = `<pre style="font-size:12px;color:var(--text-secondary)">${JSON.stringify(result, null, 2)}</pre>`;
+  }
+}
+
+function isApiKeyError(msg) {
+  if (!msg) return false;
+  return /api.?key|authenticationerror|no key is set|claude code 可能未登录|anthropic_auth_token|anthropic_api_key/i.test(msg);
+}
+
+function showApiKeyError(msg) {
+  dom.apiKeyPage.classList.add('show');
+}
+
+function setButtonsEnabled(enabled) {
+  $$('.side-btn').forEach(b => {
+    if (b.classList.contains('executing')) return;
+    b.disabled = !enabled;
+  });
+  dom.queryInput.disabled = !enabled;
+  dom.sendBtn.disabled = !enabled;
+}
+
+function onOperationDone() {
+  State.isExecuting = false;
+  State.currentTaskId = null;
+  // Remove executing class FIRST, then enable all buttons
+  $$('.side-btn.executing').forEach(b => b.classList.remove('executing'));
+  setButtonsEnabled(true);
+  dom.queueBar.classList.remove('visible');
+  dom.processingIndicator.classList.remove('visible');
+}
+
+async function executeOperation(op, extra) {
+  if (State.isExecuting) {
+    appendLog('warning', '当前有操作正在执行，请等待完成');
+    return;
+  }
+
+  State.isExecuting = true;
+  State.lastOp = op;
+  setButtonsEnabled(false);
+
+  // Show processing indicator
+  dom.processingIndicator.classList.add('visible');
+
+  // Highlight the active button
+  const btn = document.querySelector(`[data-op="${op}"]`);
+  if (btn) btn.classList.add('executing');
+
+  dom.logArea.innerHTML = '';
+  dom.resultContent.classList.remove('visible');
+  dom.resultContent.innerHTML = '';
+
+  let resp;
+  switch (op) {
+    case 'ingest': {
+      const formData = new FormData();
+      formData.append('file', extra);
+      resp = await callApi('POST', '/api/ingest', formData);
+      break;
+    }
+    case 'query': {
+      resp = await callApi('POST', '/api/query', {question: extra});
+      break;
+    }
+    case 'lint': {
+      resp = await callApi('POST', '/api/lint');
+      break;
+    }
+    case 'graph-rebuild': {
+      resp = await callApi('POST', '/api/graph', {infer_depth: 'basic'});
+      break;
+    }
+    case 'health': {
+      resp = await callApi('POST', '/api/health');
+      break;
+    }
+    case 'delete': {
+      resp = await callApi('DELETE', `/api/sources/${extra}`);
+      break;
+    }
+  }
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    appendLog('error', err.error || `请求失败 (${resp.status})`);
+    if (isApiKeyError(err.error)) showApiKeyError(err.error);
+    onOperationDone();
+    return;
+  }
+
+  const task = await resp.json();
+  State.currentTaskId = task.task_id;
+  connectWS(task.task_id);
+}
+
+// ── Event handlers ─────────────────────────────────────────────
+function bindEvents() {
+  // Sidebar buttons
+  $$('.side-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const op = btn.dataset.op;
+      if (op === 'ingest') {
+        dom.fileInput.click();
+      } else if (op === 'graph-rebuild') {
+        if (confirm('重建图谱将重新扫描所有页面，可能消耗较多 API 调用。是否继续？')) {
+          executeOperation('graph-rebuild');
+        }
+      } else {
+        executeOperation(op);
+      }
+    });
+  });
+
+  // Help icons
+  document.addEventListener('mouseover', e => {
+    if (e.target.classList.contains('help-icon')) {
+      const help = e.target.dataset.help;
+      dom.tooltip.textContent = help;
+      dom.tooltip.classList.add('show');
+    }
+  });
+  document.addEventListener('mousemove', e => {
+    if (dom.tooltip.classList.contains('show')) {
+      dom.tooltip.style.left = (e.clientX + 12) + 'px';
+      dom.tooltip.style.top = (e.clientY - 30) + 'px';
+    }
+  });
+  document.addEventListener('mouseout', e => {
+    if (e.target.classList.contains('help-icon')) {
+      dom.tooltip.classList.remove('show');
+    }
+  });
+
+  // Query
+  dom.sendBtn.addEventListener('click', () => {
+    const q = dom.queryInput.value.trim();
+    if (!q) return;
+    executeOperation('query', q);
+  });
+  dom.queryInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      dom.sendBtn.click();
+    }
+  });
+
+  // File input
+  dom.fileInput.addEventListener('change', () => {
+    const file = dom.fileInput.files[0];
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) {
+      alert('文件过大（>50MB），请压缩或拆分后再试');
+      dom.fileInput.value = '';
+      return;
+    }
+    executeOperation('ingest', file);
+    dom.fileInput.value = '';
+  });
+
+  // Drawer
+  dom.drawerClose.addEventListener('click', () => {
+    dom.drawer.classList.remove('open');
+  });
+
+  // Sidebar toggle
+  const sidebarToggle = $('#sidebar-toggle');
+  const sidebarEl = $('#sidebar');
+
+  sidebarToggle.addEventListener('click', () => {
+    if (sidebarEl.classList.contains('collapsed')) {
+      sidebarEl.classList.remove('collapsed');
+      sidebarToggle.textContent = '◀';
+      sidebarToggle.title = '折叠侧边栏';
+    } else {
+      sidebarEl.classList.add('collapsed');
+      sidebarToggle.textContent = '▶';
+      sidebarToggle.title = '展开侧边栏';
+    }
+  });
+
+  // Theme toggle
+  dom.themeToggle.addEventListener('click', () => {
+    State.darkMode = !State.darkMode;
+    document.documentElement.dataset.theme = State.darkMode ? 'dark' : 'light';
+    dom.themeIcon.textContent = State.darkMode ? '☀️' : '🌙';
+    localStorage.setItem('iwiki_dark_mode', State.darkMode);
+    // Update graph node label color
+    if (network) {
+      network.setOptions({nodes: {font: {color: State.darkMode ? '#E6EDF3' : '#333'}}});
+    }
+  });
+
+  // Delete button
+  document.getElementById('delete-btn').addEventListener('click', async () => {
+    try {
+      const resp = await fetch('/api/sources');
+      const sources = await resp.json();
+      if (!sources.length) {
+        appendLog('warning', '没有可删除的文档');
+        return;
+      }
+      const name = prompt('输入要删除的文档名:\n' + sources.map(s => s.name).join('\n'));
+      if (!name) return;
+      if (confirm(`确定要删除「${name}」吗？此操作不可撤销。`)) {
+        await executeOperation('delete', name);
+        setTimeout(() => {
+          if (confirm('是否重建知识图谱以反映最新状态？')) {
+            executeOperation('graph-rebuild');
+          }
+        }, 1000);
+      }
+    } catch(e) {
+      appendLog('error', '获取文档列表失败');
+    }
+  });
+
+  // API Key dismiss
+  dom.apiKeyDismiss.addEventListener('click', () => {
+    dom.apiKeyPage.classList.remove('show');
+  });
+
+  // API Key page → open settings
+  dom.apiKeyToSettings.addEventListener('click', () => {
+    dom.apiKeyPage.classList.remove('show');
+    openSettingsModal();
+  });
+
+  // Settings button
+  dom.settingsBtn.addEventListener('click', openSettingsModal);
+
+  // Settings modal — close on overlay click
+  dom.settingsModal.addEventListener('click', (e) => {
+    if (e.target === dom.settingsModal) closeSettingsModal();
+  });
+
+  function updateModelDropdown(provider) {
+    const select = dom.settingsModel;
+    const currentValue = select.value;
+    select.innerHTML = '';
+    for (const m of MODEL_PRESETS[provider] || MODEL_PRESETS.anthropic) {
+      const opt = document.createElement('option');
+      opt.value = m.value;
+      opt.textContent = m.label;
+      select.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__';
+    customOpt.textContent = '自定义模型名…';
+    select.appendChild(customOpt);
+
+    // Try to restore previous value
+    let found = false;
+    for (const opt of select.options) {
+      if (opt.value === currentValue) { select.value = currentValue; found = true; break; }
+    }
+    if (!found) select.value = MODEL_PRESETS[provider][0].value;
+    dom.settingsModelCustom.style.display = 'none';
+  }
+
+  // Provider change — update base URL, model list
+  dom.settingsProvider.addEventListener('change', () => {
+    const prov = dom.settingsProvider.value;
+    if (prov === 'anthropic') {
+      dom.settingsBaseUrl.value = '';
+      dom.settingsBaseUrl.readOnly = true;
+      dom.settingsBaseUrl.style.background = 'var(--bg-panel)';
+    } else if (prov === 'deepseek') {
+      dom.settingsBaseUrl.value = 'https://api.deepseek.com/anthropic';
+      dom.settingsBaseUrl.readOnly = true;
+      dom.settingsBaseUrl.style.background = 'var(--bg-panel)';
+    } else {
+      dom.settingsBaseUrl.value = '';
+      dom.settingsBaseUrl.readOnly = false;
+      dom.settingsBaseUrl.style.background = 'var(--bg)';
+    }
+    updateModelDropdown(prov);
+  });
+
+  // Model dropdown — toggle custom input
+  dom.settingsModel.addEventListener('change', () => {
+    const isCustom = dom.settingsModel.value === '__custom__';
+    dom.settingsModelCustom.style.display = isCustom ? 'block' : 'none';
+    if (isCustom) dom.settingsModelCustom.focus();
+  });
+
+  // Test connection
+  dom.settingsTestBtn.addEventListener('click', async () => {
+    const key = dom.settingsApiKey.value.trim();
+    if (!key) {
+      dom.settingsTestResult.innerHTML = '<span style="color:#DC2626">请先输入 API Key</span>';
+      return;
+    }
+    let model = dom.settingsModel.value;
+    if (model === '__custom__') {
+      model = dom.settingsModelCustom.value.trim();
+    }
+    const baseUrl = dom.settingsBaseUrl.value.trim();
+    dom.settingsTestResult.textContent = '测试中…';
+    dom.settingsTestBtn.disabled = true;
+    try {
+      const resp = await fetch('/api/settings/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({api_key: key, model: model, base_url: baseUrl})
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        dom.settingsTestResult.innerHTML = '<span style="color:#16A34A">✅ 连接成功</span>';
+      } else {
+        dom.settingsTestResult.innerHTML = `<span style="color:#DC2626">❌ 连接失败：${escapeHtml(data.error || '未知错误')}</span>`;
+      }
+    } catch(e) {
+      dom.settingsTestResult.innerHTML = `<span style="color:#DC2626">❌ 请求失败：${escapeHtml(e.message)}</span>`;
+    } finally {
+      dom.settingsTestBtn.disabled = false;
+    }
+  });
+
+  // Save settings
+  dom.settingsSaveBtn.addEventListener('click', async () => {
+    const apiKey = dom.settingsApiKey.value.trim();
+    let model = dom.settingsModel.value;
+    if (model === '__custom__') {
+      model = dom.settingsModelCustom.value.trim();
+      if (!model) {
+        dom.settingsTestResult.innerHTML = '<span style="color:#DC2626">请输入自定义模型名</span>';
+        return;
+      }
+    }
+    const baseUrl = dom.settingsBaseUrl.value.trim();
+
+    if (!apiKey && !model && !baseUrl) {
+      dom.settingsTestResult.innerHTML = '<span style="color:#DC2626">请至少填写 API Key、模型或端点 URL</span>';
+      return;
+    }
+
+    dom.settingsSaveBtn.disabled = true;
+    dom.settingsSaveBtn.textContent = '保存中…';
+    try {
+      const resp = await fetch('/api/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({api_key: apiKey, model: model, base_url: baseUrl})
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        State.hasApiKey = true;
+        State.modelName = model;
+        State.modelLabel = getModelLabel(model, baseUrl);
+        dom.modelInfo.textContent = `模型: ${State.modelLabel || model}`;
+        dom.settingsTestResult.innerHTML = '<span style="color:#16A34A">✅ 已保存，即时生效</span>';
+        dom.apiKeyPage.classList.remove('show');
+        setTimeout(closeSettingsModal, 1000);
+      }
+    } catch(e) {
+      dom.settingsTestResult.innerHTML = `<span style="color:#DC2626">保存失败：${escapeHtml(e.message)}</span>`;
+    } finally {
+      dom.settingsSaveBtn.disabled = false;
+      dom.settingsSaveBtn.textContent = '保存';
+    }
+  });
+}
+
+// ── Settings modal helpers ──────────────────────────────────────
+async function openSettingsModal() {
+  dom.settingsModal.style.display = 'flex';
+  dom.settingsTestResult.textContent = '';
+  dom.settingsModelCustom.style.display = 'none';
+  dom.settingsSaveBtn.disabled = false;
+  dom.settingsSaveBtn.textContent = '保存';
+  dom.settingsTestBtn.disabled = false;
+  // Load current settings
+  try {
+    const resp = await fetch('/api/settings');
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.has_key) {
+        dom.settingsApiKey.placeholder = '当前: ' + data.api_key_masked + ' (留空不修改)';
+      } else {
+        dom.settingsApiKey.placeholder = 'sk-...';
+      }
+      // Restore provider / base_url
+      const baseUrl = data.base_url || '';
+      let provider;
+      if (baseUrl === 'https://api.deepseek.com/anthropic') {
+        provider = 'deepseek';
+      } else if (baseUrl) {
+        provider = 'custom';
+      } else {
+        provider = 'anthropic';
+      }
+      dom.settingsProvider.value = provider;
+      dom.settingsBaseUrl.value = baseUrl;
+      dom.settingsBaseUrl.readOnly = (provider !== 'custom');
+      dom.settingsBaseUrl.style.background = dom.settingsBaseUrl.readOnly ? 'var(--bg-panel)' : 'var(--bg)';
+      // Populate model dropdown for this provider
+      updateModelDropdown(provider);
+      // Restore model
+      const model = data.model || '';
+      const select = dom.settingsModel;
+      let found = false;
+      for (const opt of select.options) {
+        if (opt.value === model) { select.value = model; found = true; break; }
+      }
+      if (!found && model) {
+        select.value = '__custom__';
+        dom.settingsModelCustom.style.display = 'block';
+        dom.settingsModelCustom.value = model;
+      }
+    }
+  } catch(e) {}
+}
+
+function closeSettingsModal() {
+  dom.settingsModal.style.display = 'none';
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ── Welcome modal ──────────────────────────────────────────────
+function showWelcomeModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h2>欢迎使用 iWiki 🎉</h2>
+      <p>1. 📄 <b>摄入文档</b> — 点击左侧「摄入文档」按钮，将你的文档导入知识库</p>
+      <p>2. 💬 <b>提问</b> — 在顶部搜索栏输入问题，AI 会从你的知识库中综合答案</p>
+      <p>3. 🗺️ <b>浏览图谱</b> — 知识图谱自动构建，点击节点查看详情，发现知识关联</p>
+      <label><input type="checkbox" id="dismiss-welcome"> 不再显示</label>
+      <div class="btn-row">
+        <button class="btn-primary" id="welcome-start">开始使用</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#welcome-start').addEventListener('click', () => {
+    if (overlay.querySelector('#dismiss-welcome').checked) {
+      localStorage.setItem('iwiki_welcome_dismissed', 'true');
+    }
+    overlay.remove();
+  });
+}
+
+// ── Boot ───────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>

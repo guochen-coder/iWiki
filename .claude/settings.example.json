@@ -1,0 +1,7 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "你的API密钥",
+    "LLM_MODEL": "anthropic/claude-sonnet-4-6",
+    "ANTHROPIC_BASE_URL": ""
+  }
+}

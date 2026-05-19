@@ -129,6 +129,7 @@ async def api_ingest(file: UploadFile = File(...)):
             try:
                 # Save uploaded file to raw/
                 dest = PROJECT_ROOT / "raw" / safe_name
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
                 await push_progress(tid, "log", level="info", message=f"读取文件: {safe_name}")
                 await push_progress(tid, "progress", step="ingest", message="AI 分析中，可能需要 30-60 秒...")

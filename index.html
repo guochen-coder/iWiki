@@ -314,7 +314,7 @@
 
 <script>
 const originalNodes = [
-  { "id":"overview","label":"概览","type":"overview","color":"#E91E63","path":"wiki/overview.md","markdown":"# 概览\n\n这是 iWiki 知识库的概览页面。\n\n## 客户\n- [[张三]] — [[阿里巴巴]] 业务部采购经理\n- [[李四]] — [[腾讯控股]] 技术部无线部副经理\n- [[王五]] — [[顺丰控股]] 采销部经理\n- [[陈六]] — [[三峡集团]] 销售部\n\n## 爱好\n- [[喝酒]]、[[抽烟]]、[[钓鱼]]\n\n## 菜品\n- [[川菜]]、[[鲁菜]]、[[淮扬菜]]\n\n## AI 工具\n- [[Claude Code]]、[[GitHub Copilot]]、[[OpenCode]]\n- [[Anthropic]]、[[OpenAI]]、[[DeepSeek]]\n","preview":"iWiki 知识库概览，包含客户、爱好、菜品、AI 工具等分类。","group":0,"value":15 },
+  { "id":"overview","label":"概览","type":"overview","color":"#E91E63","path":"wiki/overview.md","markdown":"# 概览\n\n这是 iWiki 知识库的概览页面。投喂了客户资料、AI 行业动态、考试信息等文档后，AI 自动提取出以下知识网络。\n\n## 客户\n- [[张三]] — [[阿里巴巴]] 业务部采购经理\n- [[李四]] — [[腾讯控股]] 技术部无线部副经理\n- [[王五]] — [[顺丰控股]] 采销部经理\n- [[陈六]] — [[三峡集团]] 销售部\n\n## 爱好\n- [[喝酒]]、[[抽烟]]、[[钓鱼]]、[[阅读]]、[[健身]]\n\n## 菜品\n- [[川菜]]、[[鲁菜]]、[[淮扬菜]]\n\n## AI 生态\n- 核心：[[大语言模型]]、[[API]]、[[知识图谱]]\n- 公司：[[Anthropic]]、[[OpenAI]]、[[DeepSeek]]\n- 工具：[[Claude Code]]、[[GitHub Copilot]]、[[OpenCode]]\n\n## 教育\n- [[高考]] → [[语文]] ([[作文]]) + [[数学]]\n","preview":"iWiki 演示知识库：4 个客户、3 家 AI 公司、5 个技术概念、教育知识，构成跨领域知识图谱。","group":0,"value":15 },
   { "id":"concepts/川菜","label":"川菜","type":"concept","color":"#FF9800","path":"wiki/concepts/川菜.md","markdown":"# 川菜\n\n川菜是中国八大菜系之一，以麻辣著称。\n\n相关人物：[[李四]]（喜欢）、[[张三]]（喜欢）\n\n来源：[[李四 - 客户信息|source]], [[张三 - 客户信息|source]]","preview":"川菜是中国八大菜系之一，以麻辣著称。李四和张三都喜欢。","group":2,"value":6 },
   { "id":"concepts/抽烟","label":"抽烟","type":"concept","color":"#FF9800","path":"wiki/concepts/抽烟.md","markdown":"# 抽烟\n\n抽烟是一种爱好。[[李四]]、[[王五]] 喜欢抽烟。\n\n禁忌：[[张三]]、[[陈六]] 讨厌烟味。","preview":"李四和王五喜欢抽烟，张三和陈六讨厌烟味。","group":1,"value":6 },
   { "id":"concepts/鲁菜","label":"鲁菜","type":"concept","color":"#FF9800","path":"wiki/concepts/鲁菜.md","markdown":"# 鲁菜\n\n鲁菜是山东菜系。\n\n喜欢此菜品的客户：[[王五]]\n\n参见：[[王五 - 客户信息|source]]","preview":"鲁菜是山东菜系，王五喜欢。","group":1,"value":4 },
@@ -332,7 +332,32 @@ const originalNodes = [
   { "id":"entities/李四","label":"李四","type":"entity","color":"#2196F3","path":"wiki/entities/李四.md","markdown":"# 李四\n\n- 客户：李四\n- 公司：[[腾讯控股]]\n- 职务：技术部无线部副经理\n- 爱好：[[抽烟]]\n- 喜欢吃的菜：[[川菜]]\n- 禁忌：不喝酒","preview":"李四，腾讯控股技术部无线部副经理。","group":2,"value":6 },
   { "id":"entities/腾讯控股","label":"腾讯控股","type":"entity","color":"#2196F3","path":"wiki/entities/腾讯控股.md","markdown":"# 腾讯控股\n\n- 行业：互联网\n- 客户：[[李四]]（技术部无线部副经理）","preview":"腾讯控股，互联网行业。","group":2,"value":4 },
   { "id":"entities/张三","label":"张三","type":"entity","color":"#2196F3","path":"wiki/entities/张三.md","markdown":"# 张三\n\n- 客户：张三\n- 公司：[[阿里巴巴]]\n- 职务：业务部采购经理\n- 爱好：[[喝酒]]\n- 喜欢吃的菜：[[川菜]]\n- 禁忌：讨厌烟味\n- 生日：2026-03-20\n- 关系：妻子是[[三峡集团]]销售部职员","preview":"张三，阿里巴巴业务部采购经理。","group":3,"value":7 },
-  { "id":"entities/阿里巴巴","label":"阿里巴巴","type":"entity","color":"#2196F3","path":"wiki/entities/阿里巴巴.md","markdown":"# 阿里巴巴\n\n- 客户：[[张三]]（业务部采购经理）\n- 行业：互联网/电商","preview":"阿里巴巴，张三所在的公司。","group":3,"value":4 }
+  { "id":"entities/阿里巴巴","label":"阿里巴巴","type":"entity","color":"#2196F3","path":"wiki/entities/阿里巴巴.md","markdown":"# 阿里巴巴\n\n- 客户：[[张三]]（业务部采购经理）\n- 行业：互联网/电商","preview":"阿里巴巴，张三所在的公司。","group":3,"value":4 },
+
+  // ── AI 公司 ──
+  { "id":"entities/DeepSeek","label":"DeepSeek","type":"entity","color":"#2196F3","path":"wiki/entities/DeepSeek.md","markdown":"# DeepSeek\n\nAI 公司，以 DeepSeek 系列模型闻名。\n\n- 代表产品：DeepSeek-V3、DeepSeek-R1\n- 提供 API 服务，兼容 OpenAI 接口格式\n- 以高性价比著称","preview":"DeepSeek，以高性价比 AI 模型闻名。","group":4,"value":8 },
+  { "id":"entities/OpenAI","label":"OpenAI","type":"entity","color":"#2196F3","path":"wiki/entities/OpenAI.md","markdown":"# OpenAI\n\n人工智能研究公司。\n\n- 代表产品：GPT-4、ChatGPT\n- 提供 API 服务\n- 2022 年底引爆 AI 浪潮","preview":"OpenAI，GPT-4 和 ChatGPT 的创造者。","group":4,"value":8 },
+  { "id":"entities/Anthropic","label":"Anthropic","type":"entity","color":"#2196F3","path":"wiki/entities/Anthropic.md","markdown":"# Anthropic\n\nAI 安全公司。\n\n- 代表产品：Claude 系列模型\n- 专注于 AI 安全与对齐研究\n- Claude Code 是其推出的编程助手","preview":"Anthropic，Claude 系列模型的创造者。","group":4,"value":7 },
+
+  // ── AI 工具 ──
+  { "id":"concepts/Claude Code","label":"Claude Code","type":"concept","color":"#FF9800","path":"wiki/concepts/Claude Code.md","markdown":"# Claude Code\n\nAnthropic 推出的 AI 编程助手。\n\n- 基于 Claude 模型\n- 支持命令行和 IDE 集成\n- 可在终端中直接进行代码编写、调试、重构\n- 由 [[Anthropic]] 开发","preview":"Claude Code，Anthropic 推出的终端 AI 编程助手。","group":4,"value":6 },
+  { "id":"concepts/GitHub Copilot","label":"GitHub Copilot","type":"concept","color":"#FF9800","path":"wiki/concepts/GitHub Copilot.md","markdown":"# GitHub Copilot\n\nGitHub 推出的 AI 编程助手。\n\n- 基于 [[OpenAI]] Codex 模型\n- 深度集成 VS Code、JetBrains 等 IDE\n- 支持代码补全、聊天、代码审查","preview":"GitHub Copilot，最流行的 AI 编程助手之一。","group":4,"value":5 },
+  { "id":"concepts/OpenCode","label":"OpenCode","type":"concept","color":"#FF9800","path":"wiki/concepts/OpenCode.md","markdown":"# OpenCode\n\n开源的 AI 编程工具。\n\n- 类似 Claude Code 的开源替代\n- 支持多种 LLM 后端\n- 社区驱动开发","preview":"OpenCode，开源的终端 AI 编程工具。","group":4,"value":3 },
+
+  // ── 技术概念 ──
+  { "id":"concepts/API","label":"API","type":"concept","color":"#FF9800","path":"wiki/concepts/API.md","markdown":"# API\n\n应用程序编程接口。\n\n- 系统间通信的桥梁\n- [[OpenAI]]、[[Anthropic]]、[[DeepSeek]] 均提供 API\n- RESTful API 和 OpenAI 兼容格式是主流","preview":"API，应用程序编程接口，AI 服务的主要交互方式。","group":4,"value":5 },
+  { "id":"concepts/大语言模型","label":"大语言模型","type":"concept","color":"#FF9800","path":"wiki/concepts/大语言模型.md","markdown":"# 大语言模型 (LLM)\n\nLarge Language Model，基于 Transformer 架构的大规模语言模型。\n\n## 代表\n- [[OpenAI]]：GPT-4\n- [[Anthropic]]：Claude\n- [[DeepSeek]]：DeepSeek-V3\n\n## 应用\n- [[Claude Code]]、[[GitHub Copilot]] 等编程助手\n- 聊天、写作、翻译、代码生成","preview":"大语言模型(LLM)，驱动现代 AI 应用的核心技术。","group":4,"value":10 },
+  { "id":"concepts/知识图谱","label":"知识图谱","type":"concept","color":"#FF9800","path":"wiki/concepts/知识图谱.md","markdown":"# 知识图谱\n\nKnowledge Graph，用图结构表示知识。\n\n- 节点 = 实体/概念\n- 边 = 关系\n- 支持语义搜索和推理\n\niWiki 就是基于知识图谱来组织和管理你的个人知识。","preview":"知识图谱，用图结构表达知识间的关联。","group":4,"value":6 },
+
+  // ── 教育 ──
+  { "id":"concepts/高考","label":"高考","type":"concept","color":"#FF9800","path":"wiki/concepts/高考.md","markdown":"# 高考\n\n全国普通高等学校招生统一考试。\n\n- 每年 6 月举行\n- 主要科目：[[语文]]、[[数学]]、外语、综合\n- [[作文]] 是语文科目的重要组成部分","preview":"高考，中国最重要的升学考试。","group":5,"value":7 },
+  { "id":"concepts/语文","label":"语文","type":"concept","color":"#FF9800","path":"wiki/concepts/语文.md","markdown":"# 语文\n\n高考核心科目之一。\n\n- 考查阅读理解、语言运用、写作能力\n- [[作文]] 占比约 40%\n- 文言文和现代文阅读并重","preview":"语文，高考核心科目，作文占比最大。","group":5,"value":5 },
+  { "id":"concepts/数学","label":"数学","type":"concept","color":"#FF9800","path":"wiki/concepts/数学.md","markdown":"# 数学\n\n高考核心科目之一。\n\n- 考查逻辑推理与运算能力\n- 与 [[大语言模型]] 的数学推理能力有天然关联\n- AI 在数学证明领域仍在快速进步","preview":"数学，高考核心科目，也是 AI 推理能力的试金石。","group":5,"value":5 },
+  { "id":"concepts/作文","label":"作文","type":"concept","color":"#FF9800","path":"wiki/concepts/作文.md","markdown":"# 作文\n\n[[语文]] 科目的重要组成部分，占分约 60 分。\n\n- 材料作文是主流题型\n- 考察思辨能力和语言表达\n- [[大语言模型]] 已能生成高质量作文","preview":"作文，语文考试的重头戏，AI 也能写。","group":5,"value":4 },
+
+  // ── 爱好扩展 ──
+  { "id":"concepts/阅读","label":"阅读","type":"concept","color":"#FF9800","path":"wiki/concepts/阅读.md","markdown":"# 阅读\n\n一种学习与休闲兼具的活动。\n\n- [[张三]] 喜欢阅读商业传记\n- [[李四]] 偏爱科幻小说\n- 与 [[知识图谱]] 结合：阅读笔记可自动建图","preview":"阅读，张三和李四的共同爱好。","group":3,"value":3 },
+  { "id":"concepts/健身","label":"健身","type":"concept","color":"#FF9800","path":"wiki/concepts/健身.md","markdown":"# 健身\n\n体育锻炼与身体管理。\n\n- [[陈六]] 每周健身 3 次\n- [[王五]] 喜欢跑步\n- Apple Watch 记录健康数据","preview":"健身，陈六和王五保持的运动习惯。","group":0,"value":3 }
 ];
 
 const originalEdges = [
@@ -381,7 +406,40 @@ const originalEdges = [
   { "from":"entities/王五","to":"concepts/抽烟","type":"EXTRACTED","color":"#555555","confidence":1.0 },
   { "from":"entities/李四","to":"entities/腾讯控股","type":"EXTRACTED","color":"#555555","confidence":1.0 },
   { "from":"entities/张三","to":"entities/阿里巴巴","type":"EXTRACTED","color":"#555555","confidence":1.0 },
-  { "from":"entities/张三","to":"entities/三峡集团","type":"EXTRACTED","color":"#555555","confidence":1.0 }
+  { "from":"entities/张三","to":"entities/三峡集团","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+
+  // ── AI 生态连接 ──
+  { "from":"overview","to":"entities/DeepSeek","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"overview","to":"entities/OpenAI","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"overview","to":"entities/Anthropic","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"overview","to":"concepts/大语言模型","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"overview","to":"concepts/API","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"overview","to":"concepts/知识图谱","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"overview","to":"concepts/高考","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/大语言模型","to":"entities/OpenAI","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/大语言模型","to":"entities/Anthropic","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/大语言模型","to":"entities/DeepSeek","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/大语言模型","to":"concepts/Claude Code","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/大语言模型","to":"concepts/GitHub Copilot","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/大语言模型","to":"concepts/OpenCode","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/Claude Code","to":"entities/Anthropic","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/GitHub Copilot","to":"entities/OpenAI","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/API","to":"entities/OpenAI","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/API","to":"entities/Anthropic","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/API","to":"entities/DeepSeek","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/Claude Code","to":"concepts/OpenCode","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/知识图谱","to":"concepts/大语言模型","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/高考","to":"concepts/语文","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/高考","to":"concepts/数学","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/语文","to":"concepts/作文","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/数学","to":"concepts/大语言模型","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"concepts/作文","to":"concepts/大语言模型","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+
+  // ── 爱好扩展连接 ──
+  { "from":"entities/张三","to":"concepts/阅读","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"entities/李四","to":"concepts/阅读","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"entities/陈六","to":"concepts/健身","type":"EXTRACTED","color":"#555555","confidence":1.0 },
+  { "from":"entities/王五","to":"concepts/健身","type":"EXTRACTED","color":"#555555","confidence":1.0 }
 ].map(edge => ({
   ...edge,
   id: edge.id || `${edge.from}->${edge.to}:${edge.type || "INFERRED"}`,

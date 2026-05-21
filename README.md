@@ -12,7 +12,9 @@ iWiki 是一个面向普通用户的知识管理工具。持续"投喂"文档，
 ### 1. 下载项目
 
 ```bash
+//github
 git clone https://github.com/guochen-coder/iWiki.git
+//国内下载地址 git clone https://gitcode.com/Kwok_Chen/iWiki.git
 cd iWiki
 ```
 

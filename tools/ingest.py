@@ -63,7 +63,7 @@ def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def call_llm(prompt: str, max_tokens: int = 8192) -> str:
+def call_llm(prompt: str, max_tokens: int = 16384) -> str:
     try:
         from litellm import completion
     except ImportError:
@@ -293,7 +293,7 @@ Return ONLY a valid JSON object with these fields (no markdown fences, no prose 
 """
 
     print(f"  calling API (model: ...)")
-    raw = call_llm(prompt, max_tokens=8192)
+    raw = call_llm(prompt, max_tokens=16384)
     try:
         data = parse_json_from_response(raw)
     except (ValueError, json.JSONDecodeError) as e:

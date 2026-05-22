@@ -602,7 +602,10 @@ function connectWS(taskId) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws/progress/${taskId}`);
 
-  // Polling fallback: check task status every 3s in case WebSocket misses complete/error
+  // Polling fallback: check task status with adaptive interval
+  const MIN_POLL = 3000;
+  const MAX_POLL = 15000;
+  let pollIntervalMs = MIN_POLL;
   const pollInterval = setInterval(async () => {
     try {
       const resp = await fetch(`/api/task/${taskId}`);
@@ -619,9 +622,11 @@ function connectWS(taskId) {
         clearInterval(pollInterval);
         appendLog('error', task.error || '操作失败');
         onOperationDone();
+      } else if (task.status === 'running') {
+        pollIntervalMs = Math.min(pollIntervalMs * 1.5, MAX_POLL);
       }
     } catch(e) { /* ignore poll errors */ }
-  }, 3000);
+  }, pollIntervalMs);
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
@@ -652,15 +657,19 @@ function connectWS(taskId) {
     }
   };
 
+  let reconnectAttempts = 0;
+  const MAX_BACKOFF = 30000;
+  ws.onopen = () => { reconnectAttempts = 0; };
   ws.onclose = (event) => {
     clearInterval(pollInterval);
     if (!event.wasClean && State.isExecuting) {
-      // Reconnect with backoff
+      const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), MAX_BACKOFF);
+      reconnectAttempts++;
       setTimeout(() => {
         if (State.currentTaskId && State.isExecuting) {
           connectWS(State.currentTaskId);
         }
-      }, 2000);
+      }, delay);
     }
   };
 }

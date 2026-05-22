@@ -16,7 +16,7 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.llm_client import init_client
+from tools.llm_client import init_client, get_total_usage
 
 # ── Load env from .claude/settings.json on startup ────────────
 def _load_claude_env():
@@ -74,8 +74,7 @@ _write_lock = asyncio.Lock()
 tasks: dict[str, dict] = {}
 usage_stats = {
     "total_requests": 0,
-    "total_input_tokens": 0,
-    "total_output_tokens": 0,
+    "by_operation": {},
 }
 # Per-task progress queues: task_id -> asyncio.Queue
 progress_queues: dict[str, asyncio.Queue] = {}
@@ -138,10 +137,11 @@ async def push_progress(task_id: str, msg_type: str, **kwargs):
     if task_id in progress_queues:
         await progress_queues[task_id].put(msg)
 
-async def track_usage(input_tokens: int = 0, output_tokens: int = 0):
+async def track_usage(operation: str = "unknown"):
     usage_stats["total_requests"] += 1
-    usage_stats["total_input_tokens"] += input_tokens
-    usage_stats["total_output_tokens"] += output_tokens
+    if operation not in usage_stats["by_operation"]:
+        usage_stats["by_operation"][operation] = {"count": 0}
+    usage_stats["by_operation"][operation]["count"] += 1
 
 # ── Static files ─────────────────────────────────────────────────
 @app.get("/")
@@ -222,7 +222,7 @@ async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
                 await push_progress(tid, "complete", result={"ingested": safe_name})
                 tasks[tid]["status"] = "completed"
                 tasks[tid]["result"] = {"ingested": safe_name}
-                await track_usage()
+                await track_usage("ingest")
             except Exception as e:
                 err_msg = _sanitize_error(e)
                 await push_progress(tid, "log", level="error", message=f"摄入失败: {err_msg}")
@@ -269,7 +269,7 @@ async def api_query(body: dict):
                 await push_progress(tid, "complete", result=result_data)
                 tasks[tid]["status"] = "completed"
                 tasks[tid]["result"] = result_data
-                await track_usage(result.tokens_used, 0)
+                await track_usage("query")
             except Exception as e:
                 err_msg = _sanitize_error(e)
                 await push_progress(tid, "log", level="error", message=f"查询失败: {err_msg}")
@@ -345,7 +345,7 @@ async def api_lint():
                 await push_progress(tid, "complete", result=result if isinstance(result, dict) else {"report": str(result)})
                 tasks[tid]["status"] = "completed"
                 tasks[tid]["result"] = result if isinstance(result, dict) else {"report": str(result)}
-                await track_usage()
+                await track_usage("lint")
             except Exception as e:
                 err_msg = _sanitize_error(e)
                 await push_progress(tid, "log", level="error", message=f"检查失败: {err_msg}")
@@ -391,7 +391,7 @@ async def api_graph(body: dict):
                 await push_progress(tid, "complete", result={"status": "ok"})
                 tasks[tid]["status"] = "completed"
                 tasks[tid]["result"] = {"status": "ok"}
-                await track_usage()
+                await track_usage("graph")
             except Exception as e:
                 err_msg = _sanitize_error(e)
                 await push_progress(tid, "log", level="error", message=f"图谱构建失败: {err_msg}")
@@ -577,8 +577,12 @@ async def api_model():
 
 @app.get("/api/usage")
 async def api_usage():
-    """Return session usage stats."""
-    return JSONResponse(usage_stats)
+    """Return session usage stats (requests + LLM token counts)."""
+    llm_usage = get_total_usage()
+    return JSONResponse({
+        **usage_stats,
+        "llm_usage": llm_usage,
+    })
 
 
 @app.get("/api/graph-data")

@@ -16,8 +16,10 @@ from __future__ import annotations
 import sys
 import re
 import json
+import hashlib
 import argparse
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from datetime import date
 
@@ -110,18 +112,13 @@ def append_log(entry: str):
     LOG_FILE.write_text(entry.strip() + "\n\n" + existing, encoding="utf-8")
 
 
-def query(question: str, save_path: str | None = None) -> QueryResult:
-    today = date.today().isoformat()
-
-    # Step 1: Read index
+@lru_cache(maxsize=128)
+def _execute_query(q_hash: str, index_hash: str, question: str) -> tuple[str, tuple[str, ...], int, int]:
+    """Cached query execution. Returns (answer, sources_tuple, tokens_used, pages_matched)."""
     index_content = read_file(INDEX_FILE)
-    if not index_content:
-        raise RuntimeError("Wiki is empty. Ingest some sources first with: python tools/ingest.py <source>")
 
-    # Step 2: Find relevant pages
     relevant_pages = find_relevant_pages(question, index_content)
 
-    # If no keyword match, ask Claude to identify relevant pages from the index
     if not relevant_pages or len(relevant_pages) <= 1:
         print("  selecting relevant pages via API...")
         prompt = f"Given this wiki index:\n\n{index_content}\n\nWhich pages are most relevant to answering: \"{question}\"\n\nReturn ONLY a JSON array of relative file paths (as listed in the index), e.g. [\"sources/foo.md\", \"concepts/Bar.md\"]. Maximum 10 pages."
@@ -135,7 +132,6 @@ def query(question: str, save_path: str | None = None) -> QueryResult:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # Step 3: Read relevant pages
     pages_context = ""
     for p in relevant_pages:
         rel = p.relative_to(REPO_ROOT)
@@ -146,7 +142,6 @@ def query(question: str, save_path: str | None = None) -> QueryResult:
 
     schema = read_file(SCHEMA_FILE)
 
-    # Step 4: Synthesize answer
     print(f"  synthesizing answer from {len(relevant_pages)} pages...")
     prompt = f"""You are querying an LLM Wiki to answer a question. Use the wiki pages below to synthesize a thorough answer. Cite sources using [[PageName]] wikilink syntax.
 
@@ -164,21 +159,35 @@ Write a well-structured markdown answer with headers, bullets, and [[wikilink]] 
     answer = response.text
     usage = response.usage
 
+    sources = tuple(str(p.relative_to(WIKI_DIR)) for p in relevant_pages)
+    total_tokens = (usage.prompt_tokens + usage.completion_tokens) if usage else 0
+    return answer, sources, total_tokens, len(relevant_pages)
+
+
+def query(question: str, save_path: str | None = None) -> QueryResult:
+    today = date.today().isoformat()
+
+    index_content = read_file(INDEX_FILE)
+    if not index_content:
+        raise RuntimeError("Wiki is empty. Ingest some sources first with: python tools/ingest.py <source>")
+
+    index_hash = hashlib.sha256(index_content.encode()).hexdigest()[:16]
+    q_hash = hashlib.sha256(question.encode()).hexdigest()
+
+    answer, sources, total_tokens, pages_matched = _execute_query(q_hash, index_hash, question)
+    sources_list = list(sources)
+
     print("\n" + "=" * 60)
     print(answer)
     print("=" * 60)
 
-    sources = [str(p.relative_to(WIKI_DIR)) for p in relevant_pages]
-    total_tokens = (usage.prompt_tokens + usage.completion_tokens) if usage else 0
-
-    # Step 5: Optionally save answer
+    # Optionally save answer (not cached — side effects)
     if save_path is not None:
         if save_path == "":
-            # Prompt for filename
             slug = input("\nSave as (slug, e.g. 'my-analysis'): ").strip()
             if not slug:
                 print("Skipping save.")
-                return QueryResult(answer=answer, sources=sources, tokens_used=total_tokens, pages_matched=len(relevant_pages))
+                return QueryResult(answer=answer, sources=sources_list, tokens_used=total_tokens, pages_matched=pages_matched)
             save_path = f"syntheses/{slug}.md"
 
         full_save_path = WIKI_DIR / save_path
@@ -193,7 +202,6 @@ last_updated: {today}
 """
         write_file(full_save_path, frontmatter + answer)
 
-        # Update index
         index_content = read_file(INDEX_FILE)
         entry = f"- [{question[:60]}]({save_path}) — synthesis"
         if "## Syntheses" in index_content:
@@ -201,11 +209,10 @@ last_updated: {today}
             INDEX_FILE.write_text(index_content, encoding="utf-8")
         print(f"  indexed: {save_path}")
 
-    # Append to log
-    append_log(f"## [{today}] query | {question[:80]}\n\nSynthesized answer from {len(relevant_pages)} pages." +
+    append_log(f"## [{today}] query | {question[:80]}\n\nSynthesized answer from {pages_matched} pages." +
                (f" Saved to {save_path}." if save_path else ""))
 
-    return QueryResult(answer=answer, sources=sources, tokens_used=total_tokens, pages_matched=len(relevant_pages))
+    return QueryResult(answer=answer, sources=sources_list, tokens_used=total_tokens, pages_matched=pages_matched)
 
 
 if __name__ == "__main__":

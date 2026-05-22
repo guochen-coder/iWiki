@@ -287,7 +287,17 @@ def run_lint():
 
     # Build context for semantic checks (contradictions, gaps)
     # Use a sample of pages to stay within context limits
-    sample = pages[:20]
+    # Prioritize recently modified pages + random older pages for coverage
+    pages_by_mtime = sorted(pages, key=lambda p: p.stat().st_mtime, reverse=True)
+    recent = pages_by_mtime[:15]
+    older = pages_by_mtime[15:]
+    if older:
+        import random
+        random.seed(42)
+        stale_sample = random.sample(older, min(5, len(older)))
+        sample = recent + stale_sample
+    else:
+        sample = recent
     pages_context = ""
     for p in sample:
         rel = p.relative_to(REPO_ROOT)

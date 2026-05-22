@@ -72,19 +72,45 @@ def write_file(path: Path, content: str):
     print(f"  wrote: {path.relative_to(REPO_ROOT)}")
 
 
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: CJK ~0.5 char/token, Latin ~0.3 char/token."""
+    cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff' or '\uac00' <= c <= '\ud7af')
+    latin = len(text) - cjk
+    return int(cjk * 0.5 + latin * 0.3) + 1
+
+
+MAX_CONTEXT_TOKENS = 4000
+
+
 def build_wiki_context() -> str:
     parts = []
     if INDEX_FILE.exists():
         parts.append(f"## wiki/index.md\n{read_file(INDEX_FILE)}")
     if OVERVIEW_FILE.exists():
         parts.append(f"## wiki/overview.md\n{read_file(OVERVIEW_FILE)}")
+
+    context = "\n\n---\n\n".join(parts)
+
     # Include a few recent source pages for contradiction checking
+    # but cap total context to MAX_CONTEXT_TOKENS
     sources_dir = WIKI_DIR / "sources"
     if sources_dir.exists():
         recent = sorted(sources_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]
         for p in recent:
-            parts.append(f"## {p.relative_to(REPO_ROOT)}\n{p.read_text()}")
-    return "\n\n---\n\n".join(parts)
+            content = p.read_text(encoding="utf-8")
+            candidate = context + f"\n\n## {p.relative_to(REPO_ROOT)}\n{content}"
+            if estimate_tokens(candidate) > MAX_CONTEXT_TOKENS:
+                remaining = MAX_CONTEXT_TOKENS - estimate_tokens(context) - 50
+                if remaining > 0:
+                    chars_per_token = 0.4
+                    snippet_len = int(remaining / chars_per_token)
+                    snippet = content[:max(snippet_len, 200)] + "\n...(truncated)"
+                    context += f"\n\n## {p.relative_to(REPO_ROOT)}\n{snippet}"
+                    print(f"  [context] truncated {p.name}: estimated {estimate_tokens(content)} tokens → capped")
+                break
+            context = candidate
+
+    return context
 
 
 def parse_json_from_response(text: str) -> dict:

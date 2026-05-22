@@ -24,8 +24,10 @@ import json
 import hashlib
 import argparse
 import statistics
+import threading
 import webbrowser
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
 import os
@@ -197,8 +199,111 @@ def append_checkpoint(page_id_str: str, edges: list[dict]):
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def build_inferred_edges(pages: list[Path], existing_edges: list[dict], cache: dict, resume: bool = True) -> list[dict]:
-    """Pass 2: API-inferred semantic relationships with checkpoint/resume."""
+_cache_lock = threading.Lock()
+
+
+def _infer_page_edges(p: Path, pages: list[Path], existing_edges: list[dict], cache: dict) -> list[dict]:
+    """Infer edges for a single page (thread-safe)."""
+    full_content = read_file(p)
+    content = full_content[:2000]
+    src = page_id(p)
+
+    node_list = "\n".join(f"- {page_id(p)} ({extract_frontmatter_type(read_file(p))})" for p in pages)
+    existing_edge_summary = "\n".join(
+        f"- {e['from']} → {e['to']} (EXTRACTED)" for e in existing_edges[:30]
+    )
+
+    prompt = f"""Analyze this wiki page and identify implicit semantic relationships to other pages in the wiki.
+
+Source page: {src}
+Content:
+{content}
+
+All available pages:
+{node_list}
+
+Already-extracted edges from this page:
+{existing_edge_summary}
+
+Return ONLY a JSON object containing an "edges" array of NEW relationships not already captured by explicit wikilinks. The response must be STRICTLY valid JSON formatted exactly like this:
+{{
+  "edges": [
+    {{"to": "page-id", "relationship": "one-line description", "confidence": 0.0-1.0, "type": "INFERRED or AMBIGUOUS"}}
+  ]
+}}
+
+CRITICAL INSTRUCTION:
+YOU MUST RETURN ONLY A RAW JSON STRING BEGINNING WITH {{ AND ENDING WITH }}.
+DO NOT OUTPUT BULLET POINTS. DO NOT OUTPUT MARKDOWN LISTS.
+ANY CONVERSATIONAL PREAMBLE WILL CAUSE A SYSTEM CRASH.
+
+Rules:
+- Only include pages from the available list above
+- Confidence >= 0.7 → INFERRED, < 0.7 → AMBIGUOUS
+- Do not repeat edges already in the extracted list
+- Return {{"edges": []}} if no new relationships found
+"""
+    page_edges = []
+    valid_rels = []
+    try:
+        raw = get_client().complete([{"role": "user", "content": prompt}], max_tokens=1024, use_fast=True).text
+        raw = raw.strip()
+
+        match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", raw)
+        if match:
+            raw = match.group(0)
+        else:
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+        inferred = json.loads(raw)
+        if isinstance(inferred, dict):
+            edges_list = inferred.get("edges", [])
+        elif isinstance(inferred, list):
+            edges_list = inferred
+        else:
+            edges_list = []
+
+        for rel in edges_list:
+            if isinstance(rel, dict) and "to" in rel:
+                confidence = float(rel.get("confidence", 0.7))
+                rel_type = rel.get("type") or ("INFERRED" if confidence >= 0.7 else "AMBIGUOUS")
+                edge = {
+                    "id": edge_id(src, rel["to"], rel_type),
+                    "from": src,
+                    "to": rel["to"],
+                    "type": rel_type,
+                    "title": rel.get("relationship", ""),
+                    "label": "",
+                    "color": EDGE_COLORS.get(rel_type, EDGE_COLORS["INFERRED"]),
+                    "confidence": confidence,
+                }
+                page_edges.append(edge)
+                valid_rels.append({
+                    "to": rel["to"],
+                    "relationship": rel.get("relationship", ""),
+                    "confidence": confidence,
+                    "type": rel_type,
+                })
+
+        with _cache_lock:
+            cache[str(p)] = {
+                "hash": sha256(full_content),
+                "edges": valid_rels,
+            }
+        append_checkpoint(src, page_edges)
+        print(f"  [ok] {src}: {len(page_edges)} edges")
+    except (json.JSONDecodeError, TypeError, ValueError) as jde:
+        print(f"  [warn] {src}: JSON parse error: {str(jde)[:60]}")
+    except Exception as e:
+        err_msg = str(e).replace('\n', ' ')[:80]
+        print(f"  [error] {src}: {err_msg}")
+
+    return page_edges
+
+
+def build_inferred_edges(pages: list[Path], existing_edges: list[dict], cache: dict, resume: bool = True, max_workers: int = 5) -> list[dict]:
+    """Pass 2: API-inferred semantic relationships with checkpoint/resume and parallel inference."""
     checkpoint_edges, completed_ids = ([], set())
     if resume:
         checkpoint_edges, completed_ids = load_checkpoint()
@@ -238,109 +343,21 @@ def build_inferred_edges(pages: list[Path], existing_edges: list[dict], cache: d
         print("  no changed pages — skipping semantic inference")
         return new_edges
 
-    total_pages = len(changed_pages)
     already_done = len(completed_ids)
-    grand_total = total_pages + already_done
-    print(f"  inferring relationships for {total_pages} remaining pages (of {grand_total} total)...")
+    print(f"  inferring relationships for {len(changed_pages)} remaining pages (of {len(changed_pages) + already_done} total) with {max_workers} workers...")
 
-    # Build a summary of existing nodes for context
-    node_list = "\n".join(f"- {page_id(p)} ({extract_frontmatter_type(read_file(p))})" for p in pages)
-    existing_edge_summary = "\n".join(
-        f"- {e['from']} → {e['to']} (EXTRACTED)" for e in existing_edges[:30]
-    )
-
-    for i, p in enumerate(changed_pages, 1):
-        full_content = read_file(p)
-        content = full_content[:2000]
-        src = page_id(p)
-        global_idx = already_done + i
-        print(f"    [{global_idx}/{grand_total}] Inferring for '{src}'... ", end="", flush=True)
-
-        prompt = f"""Analyze this wiki page and identify implicit semantic relationships to other pages in the wiki.
-
-Source page: {src}
-Content:
-{content}
-
-All available pages:
-{node_list}
-
-Already-extracted edges from this page:
-{existing_edge_summary}
-
-Return ONLY a JSON object containing an "edges" array of NEW relationships not already captured by explicit wikilinks. The response must be STRICTLY valid JSON formatted exactly like this:
-{{
-  "edges": [
-    {{"to": "page-id", "relationship": "one-line description", "confidence": 0.0-1.0, "type": "INFERRED or AMBIGUOUS"}}
-  ]
-}}
-
-CRITICAL INSTRUCTION:
-YOU MUST RETURN ONLY A RAW JSON STRING BEGINNING WITH {{ AND ENDING WITH }}.
-DO NOT OUTPUT BULLET POINTS. DO NOT OUTPUT MARKDOWN LISTS.
-ANY CONVERSATIONAL PREAMBLE WILL CAUSE A SYSTEM CRASH.
-
-Rules:
-- Only include pages from the available list above
-- Confidence >= 0.7 → INFERRED, < 0.7 → AMBIGUOUS
-- Do not repeat edges already in the extracted list
-- Return {{"edges": []}} if no new relationships found
-"""
-        page_edges = []
-        valid_rels = []
-        try:
-            raw = get_client().complete([{"role": "user", "content": prompt}], max_tokens=1024, use_fast=True).text
-            raw = raw.strip()
-
-            match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", raw)
-            if match:
-                raw = match.group(0)
-            else:
-                raw = re.sub(r"^```(?:json)?\s*", "", raw)
-                raw = re.sub(r"\s*```$", "", raw)
-
-            inferred = json.loads(raw)
-            if isinstance(inferred, dict):
-                edges_list = inferred.get("edges", [])
-            elif isinstance(inferred, list):
-                edges_list = inferred
-            else:
-                edges_list = []
-
-            for rel in edges_list:
-                if isinstance(rel, dict) and "to" in rel:
-                    confidence = float(rel.get("confidence", 0.7))
-                    rel_type = rel.get("type") or ("INFERRED" if confidence >= 0.7 else "AMBIGUOUS")
-                    edge = {
-                        "id": edge_id(src, rel["to"], rel_type),
-                        "from": src,
-                        "to": rel["to"],
-                        "type": rel_type,
-                        "title": rel.get("relationship", ""),
-                        "label": "",
-                        "color": EDGE_COLORS.get(rel_type, EDGE_COLORS["INFERRED"]),
-                        "confidence": confidence,
-                    }
-                    page_edges.append(edge)
-                    new_edges.append(edge)
-                    valid_rels.append({
-                        "to": rel["to"],
-                        "relationship": rel.get("relationship", ""),
-                        "confidence": confidence,
-                        "type": rel_type,
-                    })
-
-            cache[str(p)] = {
-                "hash": sha256(full_content),
-                "edges": valid_rels,
-            }
-            append_checkpoint(src, page_edges)
-            print(f"-> Found {len(page_edges)} edges.")
-        except (json.JSONDecodeError, TypeError, ValueError) as jde:
-            print(f"-> [WARN] Invalid JSON: {str(jde)[:60]}")
-        except Exception as e:
-            err_msg = str(e).replace('\n', ' ')[:80]
-            print(f"-> [ERROR] {err_msg}")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_infer_page_edges, p, pages, existing_edges, cache): p
+            for p in changed_pages
+        }
+        for future in as_completed(futures):
+            try:
+                page_edges = future.result()
+                new_edges.extend(page_edges)
+            except Exception as e:
+                page = futures[future]
+                print(f"  [error] {page_id(page)}: unhandled exception: {str(e)[:80]}")
 
     return new_edges
 

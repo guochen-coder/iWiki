@@ -46,10 +46,13 @@ class LLMClient:
                 )
                 text = response.choices[0].message.content
                 usage_obj = getattr(response, "usage", None)
+                prompt_tokens = usage_obj.prompt_tokens if usage_obj else 0
+                completion_tokens = usage_obj.completion_tokens if usage_obj else 0
                 usage = LLMUsage(
-                    prompt_tokens=usage_obj.prompt_tokens if usage_obj else 0,
-                    completion_tokens=usage_obj.completion_tokens if usage_obj else 0,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                 )
+                accumulate_usage(prompt_tokens, completion_tokens)
                 return LLMResponse(text=text, usage=usage)
             except Exception as e:
                 last_error = e
@@ -73,6 +76,28 @@ class LLMClient:
 
 _client: Optional[LLMClient] = None
 _lock = threading.Lock()
+
+# Global token usage accumulator (thread-safe)
+_usage_lock = threading.Lock()
+_total_prompt_tokens: int = 0
+_total_completion_tokens: int = 0
+
+
+def accumulate_usage(prompt_tokens: int, completion_tokens: int):
+    global _total_prompt_tokens, _total_completion_tokens
+    with _usage_lock:
+        _total_prompt_tokens += prompt_tokens
+        _total_completion_tokens += completion_tokens
+
+
+def get_total_usage() -> dict:
+    global _total_prompt_tokens, _total_completion_tokens
+    with _usage_lock:
+        return {
+            "total_prompt_tokens": _total_prompt_tokens,
+            "total_completion_tokens": _total_completion_tokens,
+            "total_tokens": _total_prompt_tokens + _total_completion_tokens,
+        }
 
 
 def init_client(model: str | None = None, fast_model: str | None = None, **kwargs):

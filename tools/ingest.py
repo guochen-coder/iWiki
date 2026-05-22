@@ -53,10 +53,25 @@ CONVERTIBLE_EXTENSIONS = {
 }
 ALL_SUPPORTED_EXTENSIONS = {".md"} | CONVERTIBLE_EXTENSIONS
 SCHEMA_FILE = REPO_ROOT / "CLAUDE.md"
+INGEST_CACHE_FILE = REPO_ROOT / "wiki" / ".ingest_cache.json"
 
 
 def sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _load_ingest_cache() -> dict:
+    if INGEST_CACHE_FILE.exists():
+        try:
+            return json.loads(INGEST_CACHE_FILE.read_text())
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
+
+
+def _save_ingest_cache(cache: dict):
+    INGEST_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    INGEST_CACHE_FILE.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
 
 
 def read_file(path: Path) -> str:
@@ -266,6 +281,17 @@ def ingest(source_path: str, auto_convert: bool = True):
 
     print(f"\nIngesting: {source.name}  (hash: {source_hash})")
 
+    # Check ingest cache — skip if source unchanged and all pages still exist
+    ingest_cache = _load_ingest_cache()
+    cached = ingest_cache.get(source_hash)
+    if cached:
+        all_pages_exist = all((WIKI_DIR / p).exists() for p in cached.get("pages", []))
+        if all_pages_exist:
+            print(f"  ⏭  Skipped (unchanged, {len(cached.get('pages', []))} pages intact)")
+            return {"slug": cached["slug"], "created_pages": cached["pages"], "cached": True}
+        ingest_cache.pop(source_hash)
+        _save_ingest_cache(ingest_cache)
+
     wiki_context = build_wiki_context()
     schema = read_file(SCHEMA_FILE)
 
@@ -285,6 +311,25 @@ def ingest(source_path: str, auto_convert: bool = True):
         print("Raw response saved to /tmp/ingest_debug.txt")
         Path("/tmp/ingest_debug.txt").write_text(raw)
         raise RuntimeError(f"Failed to parse LLM response as JSON: {e}")
+
+    # ── 兜底：确保 source_page / title / slug 始终存在 ──
+    if not data.get("source_page"):
+        print("  [warn] LLM did not return source_page, generating fallback...")
+        source_ref = str(source.relative_to(REPO_ROOT)) if source.is_relative_to(REPO_ROOT) else source.name
+        data["source_page"] = (
+            f"---\n"
+            f"title: \"{data.get('title', source.stem)}\"\n"
+            f"type: source\n"
+            f"sources:\n  - {source_ref}\n"
+            f"---\n\n"
+            f"# {data.get('title', source.stem)}\n\n"
+            f"> 原始文档：`{source_ref}`\n"
+            f"> 摄入日期：{today}\n"
+        )
+    if not data.get("title"):
+        data["title"] = source.stem
+    if not data.get("slug"):
+        data["slug"] = source.stem
 
     # Write source page
     slug = data["slug"]
@@ -366,6 +411,14 @@ def ingest(source_path: str, auto_convert: bool = True):
                 print(f"  indexed {n} chunks for {page}")
     except Exception as e:
         print(f"  [warn] embedding index failed: {e}")
+
+    # Save to ingest cache
+    ingest_cache[source_hash] = {
+        "slug": slug,
+        "pages": created_pages,
+        "ts": today,
+    }
+    _save_ingest_cache(ingest_cache)
 
     return {"slug": slug, "created_pages": created_pages}
 

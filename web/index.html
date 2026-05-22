@@ -204,6 +204,10 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
           <span class="icon">🔄</span> 重建图谱 <span class="en">graph</span>
           <span class="help-icon" data-help="重新扫描所有 wiki 页面，构建最新的知识关系图谱。消耗较多 API 调用。预估消耗：每页面约 1-2k tokens。">?</span>
         </button>
+        <button class="side-btn" data-op="reindex">
+          <span class="icon">📥</span> 重索引向量库 <span class="en">reindex</span>
+          <span class="help-icon" data-help="将所有 wiki 页面重新编入向量知识库，用于语义检索。需要 embedding 模型支持（text-embedding-3-small）。">?</span>
+        </button>
         <button class="side-btn" data-op="health" style="font-size:14px;height:40px;font-weight:500">
           <span class="icon" style="width:18px;height:18px">❤️</span> 健康检查 <span class="en">health</span>
           <span class="help-icon" data-help="快速检查知识库的结构完整性（空文件、索引同步、日志覆盖）。完全免费，零 API 消耗。">?</span>
@@ -219,7 +223,10 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
 
       <!-- Log + result embedded in sidebar bottom -->
       <div id="sidebar-log">
-        <div class="log-header">📋 操作日志</div>
+        <div class="log-header" style="display:flex;justify-content:space-between;align-items:center">
+          <span>📋 操作日志</span>
+          <button id="cancel-btn" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;background:var(--error);color:#FFF;font-weight:600">取消</button>
+        </div>
         <div id="queue-bar"></div>
         <div id="processing-indicator"><span id="processing-dot"></span><span id="processing-text">处理中</span></div>
         <div id="result-content"></div>
@@ -304,6 +311,10 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
       <input type="password" id="settings-api-key" placeholder="sk-..." style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;font-family:monospace;background:var(--bg);color:var(--text);box-sizing:border-box">
     </div>
     <div id="settings-test-result" style="margin-top:10px;font-size:13px"></div>
+    <div id="usage-panel" style="margin-top:12px;padding:10px;background:var(--bg-panel);border-radius:6px;font-size:12px;color:var(--text-secondary);display:none">
+      <div style="font-weight:600;margin-bottom:6px">📊 用量统计</div>
+      <div id="usage-content"></div>
+    </div>
     <div class="btn-row" style="margin-top:14px">
       <button class="btn-secondary" id="settings-test-btn">🔍 测试连接</button>
       <button class="btn-primary" id="settings-save-btn">保存</button>
@@ -622,6 +633,10 @@ function connectWS(taskId) {
         clearInterval(pollInterval);
         appendLog('error', task.error || '操作失败');
         onOperationDone();
+      } else if (task.status === 'cancelled') {
+        clearInterval(pollInterval);
+        appendLog('warning', '操作已取消');
+        onOperationDone();
       } else if (task.status === 'running') {
         pollIntervalMs = Math.min(pollIntervalMs * 1.5, MAX_POLL);
       }
@@ -720,7 +735,7 @@ function showQueryPanel(question, answer, sources) {
   dom.queryPanelQuestion.textContent = question || '查询结果';
   let processed = answer.replace(/\[\[([^\]]+)\]\]/g, '<a class="wikilink" data-page="$1">$1</a>');
   if (sources && sources.length > 0) {
-    processed += '\n\n### 引用来源\n' + sources.map(s => `- \`${s}\``).join('\n');
+    processed += '\n\n### 引用来源\n' + sources.map(s => `- [[${s}]]`).join('\n');
   }
   const html = marked.parse(processed);
   dom.queryPanelBody.innerHTML = html;
@@ -768,11 +783,11 @@ function setButtonsEnabled(enabled) {
 function onOperationDone() {
   State.isExecuting = false;
   State.currentTaskId = null;
-  // Remove executing class FIRST, then enable all buttons
   $$('.side-btn.executing').forEach(b => b.classList.remove('executing'));
   setButtonsEnabled(true);
   dom.queueBar.classList.remove('visible');
   dom.processingIndicator.classList.remove('visible');
+  document.getElementById('cancel-btn').style.display = 'none';
 }
 
 async function executeOperation(op, extra) {
@@ -787,6 +802,19 @@ async function executeOperation(op, extra) {
 
   // Show processing indicator
   dom.processingIndicator.classList.add('visible');
+
+  // Show cancel button
+  const cancelBtn = document.getElementById('cancel-btn');
+  cancelBtn.style.display = 'inline-block';
+  cancelBtn.onclick = async () => {
+    if (State.currentTaskId) {
+      try {
+        await fetch(`/api/cancel/${State.currentTaskId}`, {method: 'POST'});
+        appendLog('warning', '正在取消...');
+        cancelBtn.disabled = true;
+      } catch(e) {}
+    }
+  };
 
   // Highlight the active button
   const btn = document.querySelector(`[data-op="${op}"]`);
@@ -829,6 +857,10 @@ async function executeOperation(op, extra) {
       resp = await callApi('POST', '/api/sources/batch-delete', {names: extra});
       break;
     }
+    case 'reindex': {
+      resp = await callApi('POST', '/api/reindex');
+      break;
+    }
   }
 
   if (!resp.ok) {
@@ -855,6 +887,10 @@ function bindEvents() {
       } else if (op === 'graph-rebuild') {
         if (confirm('重建图谱将重新扫描所有页面，可能消耗较多 API 调用。是否继续？')) {
           executeOperation('graph-rebuild');
+        }
+      } else if (op === 'reindex') {
+        if (confirm('将所有 wiki 页面重新编入向量库，需要 embedding 模型调用。是否继续？')) {
+          executeOperation('reindex');
         }
       } else {
         executeOperation(op);
@@ -1221,6 +1257,34 @@ async function openSettingsModal() {
         dom.settingsModelCustom.style.display = 'block';
         dom.settingsModelCustom.value = model;
       }
+    }
+  } catch(e) {}
+
+  // Load usage stats
+  try {
+    const usageResp = await fetch('/api/usage');
+    if (usageResp.ok) {
+      const usage = await usageResp.json();
+      const usageEl = document.getElementById('usage-panel');
+      const usageContent = document.getElementById('usage-content');
+      usageEl.style.display = 'block';
+      const llm = usage.llm_usage || {};
+      const byOp = usage.by_operation || {};
+      const lines = [];
+      lines.push(`<div style="display:flex;justify-content:space-between"><span>请求总数</span><span>${usage.total_requests || 0}</span></div>`);
+      if (llm.total_tokens) {
+        lines.push(`<div style="display:flex;justify-content:space-between;margin-top:4px"><span>LLM tokens 总计</span><span>${llm.total_tokens.toLocaleString()}</span></div>`);
+        lines.push(`<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary)"><span>· prompt</span><span>${(llm.total_prompt_tokens || 0).toLocaleString()}</span></div>`);
+        lines.push(`<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary)"><span>· completion</span><span>${(llm.total_completion_tokens || 0).toLocaleString()}</span></div>`);
+      }
+      const opKeys = Object.keys(byOp);
+      if (opKeys.length) {
+        lines.push(`<div style="margin-top:6px;font-weight:600;font-size:11px">按操作类型</div>`);
+        for (const op of opKeys) {
+          lines.push(`<div style="display:flex;justify-content:space-between;font-size:11px"><span>${op}</span><span>${byOp[op].count} 次</span></div>`);
+        }
+      }
+      usageContent.innerHTML = lines.join('');
     }
   } catch(e) {}
 }

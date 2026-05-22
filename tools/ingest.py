@@ -64,6 +64,7 @@ def read_file(path: Path) -> str:
 
 
 from tools.llm_client import get_client
+from tools.prompt_loader import load_prompt
 
 
 def write_file(path: Path, content: str):
@@ -268,38 +269,12 @@ def ingest(source_path: str, auto_convert: bool = True):
     wiki_context = build_wiki_context()
     schema = read_file(SCHEMA_FILE)
 
-    prompt = f"""You are maintaining an LLM Wiki. Process this source document and integrate its knowledge into the wiki.
+    wiki_context_str = wiki_context if wiki_context else "(wiki is empty — this is the first source)"
+    source_name = source.relative_to(REPO_ROOT) if source.is_relative_to(REPO_ROOT) else source.name
 
-Schema and conventions:
-{schema}
-
-Current wiki state (index + recent pages):
-{wiki_context if wiki_context else "(wiki is empty — this is the first source)"}
-
-New source to ingest (file: {source.relative_to(REPO_ROOT) if source.is_relative_to(REPO_ROOT) else source.name}):
-=== SOURCE START ===
-{source_content}
-=== SOURCE END ===
-
-Today's date: {today}
-
-Return ONLY a valid JSON object with these fields (no markdown fences, no prose outside the JSON):
-{{
-  "title": "Human-readable title for this source",
-  "slug": "use the source filename stem as-is (e.g. '张三' from '张三.md'). Keep Chinese/Japanese/Korean characters. Do NOT transliterate to pinyin/romaji.",
-  "source_page": "full markdown content for wiki/sources/<slug>.md. First line MUST be 'title: <Human-readable Title>'. CRITICAL: Aggressively convert key people, products, concepts and projects into [[Wikilinks]] inline in the text. Omitting [[ ]] for known terms is a failure.",
-  "index_entry": "- [Title](sources/slug.md) — one-line summary",
-  "overview_update": "full updated content for wiki/overview.md, or null if no update needed",
-  "entity_pages": [
-    {{"path": "entities/EntityName.md", "content": "full markdown content"}}
-  ],
-  "concept_pages": [
-    {{"path": "concepts/ConceptName.md", "content": "full markdown content"}}
-  ],
-  "contradictions": ["describe any contradiction with existing wiki content, or empty list"],
-  "log_entry": "## [{today}] ingest | <title>\\n\\nAdded source. Key claims: ..."
-}}
-"""
+    system_msg = load_prompt("ingest_system", schema=schema, wiki_context=wiki_context_str, today=today)
+    user_msg = load_prompt("ingest_user", source_name=str(source_name), source_content=source_content, today=today)
+    prompt = system_msg + "\n\n" + user_msg
 
     print(f"  calling API (model: ...)")
     raw = get_client().complete([{"role": "user", "content": prompt}], max_tokens=16384).text
@@ -378,6 +353,19 @@ Return ONLY a valid JSON object with these fields (no markdown fences, no prose 
     if not validation["broken_links"] and not validation["unindexed"]:
         print("  ✓ Validation passed — no broken links, all pages indexed")
     print()
+
+    # Index created pages into embedding store
+    try:
+        from tools.embeddings import get_store
+        store = get_store()
+        for page in created_pages:
+            page_path = WIKI_DIR / page
+            if page_path.exists():
+                content = page_path.read_text(encoding="utf-8")
+                n = store.index_page(page, content)
+                print(f"  indexed {n} chunks for {page}")
+    except Exception as e:
+        print(f"  [warn] embedding index failed: {e}")
 
     return {"slug": slug, "created_pages": created_pages}
 

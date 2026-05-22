@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  iwiki:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./raw:/app/raw
+      - ./wiki:/app/wiki
+      - ./graph:/app/graph
+      - ./.claude/settings.json:/app/.claude/settings.json:ro
+    restart: unless-stopped

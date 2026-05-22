@@ -71,6 +71,7 @@ def read_file(path: Path) -> str:
 
 
 from tools.llm_client import get_client
+from tools.prompt_loader import load_prompt
 
 
 def sha256(text: str) -> str:
@@ -213,36 +214,7 @@ def _infer_page_edges(p: Path, pages: list[Path], existing_edges: list[dict], ca
         f"- {e['from']} → {e['to']} (EXTRACTED)" for e in existing_edges[:30]
     )
 
-    prompt = f"""Analyze this wiki page and identify implicit semantic relationships to other pages in the wiki.
-
-Source page: {src}
-Content:
-{content}
-
-All available pages:
-{node_list}
-
-Already-extracted edges from this page:
-{existing_edge_summary}
-
-Return ONLY a JSON object containing an "edges" array of NEW relationships not already captured by explicit wikilinks. The response must be STRICTLY valid JSON formatted exactly like this:
-{{
-  "edges": [
-    {{"to": "page-id", "relationship": "one-line description", "confidence": 0.0-1.0, "type": "INFERRED or AMBIGUOUS"}}
-  ]
-}}
-
-CRITICAL INSTRUCTION:
-YOU MUST RETURN ONLY A RAW JSON STRING BEGINNING WITH {{ AND ENDING WITH }}.
-DO NOT OUTPUT BULLET POINTS. DO NOT OUTPUT MARKDOWN LISTS.
-ANY CONVERSATIONAL PREAMBLE WILL CAUSE A SYSTEM CRASH.
-
-Rules:
-- Only include pages from the available list above
-- Confidence >= 0.7 → INFERRED, < 0.7 → AMBIGUOUS
-- Do not repeat edges already in the extracted list
-- Return {{"edges": []}} if no new relationships found
-"""
+    prompt = load_prompt("graph_infer", src=src, content=content, node_list=node_list, existing_edge_summary=existing_edge_summary)
     page_edges = []
     valid_rels = []
     try:
@@ -1197,6 +1169,131 @@ def append_log(entry: str):
             "> Records important additions, revisions, and clarifications in the project knowledge layer. Maintained in append-only mode for agent and human traceability."
         )
     log_path.write_text(existing + "\n\n" + entry_text + "\n", encoding="utf-8")
+
+
+def build_graph_incremental(page_path: str, content: str, infer: bool = True) -> dict:
+    """Incremental update: add/update a single page in the graph without full rebuild.
+
+    Args:
+        page_path: Relative path from wiki/ (e.g. "sources/my-page.md")
+        content: Full markdown content of the page.
+        infer: Whether to run LLM inference for this page.
+
+    Returns:
+        dict with {"nodes": int, "edges": int, "inferred": int}
+    """
+    from datetime import date
+
+    today = date.today().isoformat()
+    GRAPH_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Load existing graph or start fresh
+    if GRAPH_JSON.exists():
+        try:
+            graph_data = json.loads(GRAPH_JSON.read_text())
+        except (json.JSONDecodeError, Exception):
+            graph_data = {"nodes": [], "edges": [], "built": today}
+    else:
+        graph_data = {"nodes": [], "edges": [], "built": today}
+
+    existing_nodes = graph_data.get("nodes", [])
+    existing_edges = graph_data.get("edges", [])
+
+    # 2. Build new node for this page
+    page_file = WIKI_DIR / page_path
+    node_type = extract_frontmatter_type(content)
+    title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+    label = title_match.group(1).strip() if title_match else Path(page_path).stem
+    body = re.sub(r"^---\n.*?\n---\n?", "", content, flags=re.DOTALL)
+    preview_lines = [line.strip() for line in body.splitlines() if line.strip()]
+    preview = " ".join(preview_lines[:3])[:220]
+    new_id = page_path.replace(".md", "").replace("wiki/", "")
+
+    new_node = {
+        "id": new_id,
+        "label": label,
+        "type": node_type,
+        "color": TYPE_COLORS.get(node_type, TYPE_COLORS["unknown"]),
+        "path": f"wiki/{page_path}",
+        "markdown": content,
+        "preview": preview,
+    }
+
+    # Upsert node
+    node_idx = None
+    for i, n in enumerate(existing_nodes):
+        if n["id"] == new_id:
+            node_idx = i
+            break
+    if node_idx is not None:
+        existing_nodes[node_idx] = new_node
+    else:
+        existing_nodes.append(new_node)
+
+    # 3. Remove old extracted edges FROM this page
+    existing_edges = [e for e in existing_edges if not (e["from"] == new_id and e.get("type") == "EXTRACTED")]
+
+    # 4. Add new extracted edges from this page's wikilinks
+    all_pages = all_wiki_pages()
+    stem_map = {p.stem.lower(): page_id(p) for p in all_pages}
+    for link in extract_wikilinks(content):
+        target = stem_map.get(link.lower())
+        if target and target != new_id:
+            existing_edges.append({
+                "id": edge_id(new_id, target, "EXTRACTED"),
+                "from": new_id,
+                "to": target,
+                "type": "EXTRACTED",
+                "color": EDGE_COLORS["EXTRACTED"],
+                "confidence": 1.0,
+            })
+
+    inferred_count = 0
+
+    # 5. Run LLM inference for this page only
+    if infer:
+        cache = load_cache()
+        inferred = _infer_page_edges(page_file, all_pages, existing_edges, cache)
+        if inferred:
+            # Remove old inferred edges from this page
+            existing_edges = [e for e in existing_edges if not (e["from"] == new_id and e.get("type") in ("INFERRED", "AMBIGUOUS"))]
+            existing_edges.extend(inferred)
+            inferred_count = len(inferred)
+        save_cache(cache)
+
+    # 6. Deduplicate
+    existing_edges = deduplicate_edges(existing_edges)
+
+    # 7. Community detection
+    communities = detect_communities(existing_nodes, existing_edges)
+    for node in existing_nodes:
+        comm_id = communities.get(node["id"], -1)
+        if comm_id >= 0:
+            node["color"] = COMMUNITY_COLORS[comm_id % len(COMMUNITY_COLORS)]
+        node["group"] = comm_id
+
+    # 8. Degree computation
+    degree_map: dict[str, int] = {}
+    for e in existing_edges:
+        degree_map[e["from"]] = degree_map.get(e["from"], 0) + 1
+        degree_map[e["to"]] = degree_map.get(e["to"], 0) + 1
+    for node in existing_nodes:
+        node["value"] = degree_map.get(node["id"], 0) + 1
+
+    # 9. Save
+    graph_data = {"nodes": existing_nodes, "edges": existing_edges, "built": today}
+    GRAPH_JSON.write_text(json.dumps(graph_data, indent=2, ensure_ascii=False))
+    print(f"  incremental graph updated: {len(existing_nodes)} nodes, {len(existing_edges)} edges")
+
+    # Update graph.html
+    html = render_html(existing_nodes, existing_edges)
+    GRAPH_HTML.write_text(html, encoding="utf-8")
+
+    n_ext = len([e for e in existing_edges if e["type"] == "EXTRACTED"])
+    n_inf = len([e for e in existing_edges if e["type"] in ("INFERRED", "AMBIGUOUS")])
+    append_log(f"## [{today}] graph | Incremental update: {page_path}\n\n{len(existing_nodes)} nodes, {len(existing_edges)} edges ({n_ext} extracted, {n_inf} inferred).")
+
+    return {"nodes": len(existing_nodes), "edges": len(existing_edges), "inferred": inferred_count}
 
 
 def build_graph(infer: bool = True, open_browser: bool = False, clean: bool = False,

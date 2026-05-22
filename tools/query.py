@@ -45,6 +45,7 @@ def read_file(path: Path) -> str:
 
 
 from tools.llm_client import get_client
+from tools.prompt_loader import load_prompt
 
 
 def write_file(path: Path, content: str):
@@ -54,33 +55,44 @@ def write_file(path: Path, content: str):
 
 
 def find_relevant_pages(question: str, index_content: str) -> list[Path]:
-    """Extract linked pages from index that seem relevant to the question.
-    Uses character-level matching for CJK compatibility."""
-    md_links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', index_content)
-    question_lower = question.lower()
+    """Find relevant pages using embedding-based semantic search,
+    with keyword matching as fallback."""
     relevant = []
 
-    for title, href in md_links:
-        title_lower = title.lower()
-        # For CJK: check if any 2+ char substring of the title appears in question
-        has_cjk = any('\u4e00' <= ch <= '\u9fff' for ch in title)
-        if has_cjk:
-            # Sliding window: check if any 2-char CJK bigram from title exists in question
-            matched = any(
-                title_lower[j:j+2] in question_lower
-                for j in range(len(title_lower) - 1)
-                if any('\u4e00' <= c <= '\u9fff' for c in title_lower[j:j+2])
-            )
-        else:
-            # Latin: original word-based match (lowered threshold to >2)
-            matched = any(word in question_lower for word in title_lower.split() if len(word) > 2)
+    # Primary: embedding-based search
+    try:
+        from tools.embeddings import get_store
+        store = get_store()
+        if store.count() > 0:
+            results = store.search(question, top_k=15)
+            for r in results:
+                p = WIKI_DIR / r["path"]
+                if p.exists() and p not in relevant:
+                    relevant.append(p)
+    except Exception:
+        pass
 
-        if matched:
-            p = WIKI_DIR / href
-            if p.exists() and p not in relevant:
-                relevant.append(p)
+    # Fallback: keyword matching (if embedding store is empty or fails)
+    if not relevant:
+        md_links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', index_content)
+        question_lower = question.lower()
+        for title, href in md_links:
+            title_lower = title.lower()
+            has_cjk = any('\u4e00' <= ch <= '\u9fff' for ch in title)
+            if has_cjk:
+                matched = any(
+                    title_lower[j:j+2] in question_lower
+                    for j in range(len(title_lower) - 1)
+                    if any('\u4e00' <= c <= '\u9fff' for c in title_lower[j:j+2])
+                )
+            else:
+                matched = any(word in question_lower for word in title_lower.split() if len(word) > 2)
+            if matched:
+                p = WIKI_DIR / href
+                if p.exists() and p not in relevant:
+                    relevant.append(p)
 
-    # Also try graph-based expansion: find neighbors of matched pages
+    # Graph-based expansion: find neighbors of matched pages
     graph_json = REPO_ROOT / "graph" / "graph.json"
     if graph_json.exists() and relevant:
         try:
@@ -121,7 +133,7 @@ def _execute_query(q_hash: str, index_hash: str, question: str) -> tuple[str, tu
 
     if not relevant_pages or len(relevant_pages) <= 1:
         print("  selecting relevant pages via API...")
-        prompt = f"Given this wiki index:\n\n{index_content}\n\nWhich pages are most relevant to answering: \"{question}\"\n\nReturn ONLY a JSON array of relative file paths (as listed in the index), e.g. [\"sources/foo.md\", \"concepts/Bar.md\"]. Maximum 10 pages."
+        prompt = load_prompt("query_select_pages", index_content=index_content, question=question)
         raw = get_client().complete([{"role": "user", "content": prompt}], max_tokens=512, use_fast=True).text
         raw = raw.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -143,18 +155,7 @@ def _execute_query(q_hash: str, index_hash: str, question: str) -> tuple[str, tu
     schema = read_file(SCHEMA_FILE)
 
     print(f"  synthesizing answer from {len(relevant_pages)} pages...")
-    prompt = f"""You are querying an LLM Wiki to answer a question. Use the wiki pages below to synthesize a thorough answer. Cite sources using [[PageName]] wikilink syntax.
-
-Schema:
-{schema}
-
-Wiki pages:
-{pages_context}
-
-Question: {question}
-
-Write a well-structured markdown answer with headers, bullets, and [[wikilink]] citations. At the end, add a ## Sources section listing the pages you drew from.
-"""
+    prompt = load_prompt("query_synthesis", schema=schema, pages_context=pages_context, question=question)
     response = get_client().complete([{"role": "user", "content": prompt}], max_tokens=4096)
     answer = response.text
     usage = response.usage

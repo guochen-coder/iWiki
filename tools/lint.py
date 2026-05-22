@@ -40,6 +40,7 @@ def read_file(path: Path) -> str:
 
 
 from tools.llm_client import get_client
+from tools.prompt_loader import load_prompt
 
 
 def all_wiki_pages() -> list[Path]:
@@ -304,23 +305,7 @@ def run_lint():
         pages_context += f"\n\n### {rel}\n{read_file(p)[:1500]}"  # truncate long pages
 
     print("  running semantic lint via API...")
-    prompt = f"""You are linting an LLM Wiki. Review the pages below and identify:
-1. Contradictions between pages (claims that conflict)
-2. Stale content (summaries that newer sources have superseded)
-3. Data gaps (important questions the wiki can't answer — suggest specific sources to find)
-4. Concepts mentioned but lacking depth
-
-Wiki pages (sample of {len(sample)} pages):
-{pages_context}
-
-Return a markdown lint report with these sections:
-## Contradictions
-## Stale Content
-## Data Gaps & Suggested Sources
-## Concepts Needing More Depth
-
-Be specific — name the exact pages and claims involved.
-"""
+    prompt = load_prompt("lint_semantic", sample_size=str(len(sample)), pages_context=pages_context)
     semantic_report = get_client().complete([{"role": "user", "content": prompt}], max_tokens=3000).text
 
     # Compose full report

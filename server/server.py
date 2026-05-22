@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 import asyncio
+import threading
 import traceback
 from pathlib import Path
 from datetime import datetime
@@ -64,6 +65,7 @@ from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
 
 from tools import ingest, query, health, lint as lint_tool, build_graph
+from tools.embeddings import get_store as get_embedding_store
 
 # ── App ──────────────────────────────────────────────────────────
 app = FastAPI(title="iWiki", docs_url=None, redoc_url=None)
@@ -78,6 +80,8 @@ usage_stats = {
 }
 # Per-task progress queues: task_id -> asyncio.Queue
 progress_queues: dict[str, asyncio.Queue] = {}
+# Per-task cancel events: task_id -> threading.Event
+active_tasks: dict[str, threading.Event] = {}
 
 # ── Helpers ──────────────────────────────────────────────────────
 def now_ts() -> str:
@@ -128,7 +132,14 @@ def make_task(status: str = "pending") -> dict:
     tid = uuid.uuid4().hex[:12]
     tasks[tid] = {"task_id": tid, "status": status, "progress": [], "result": None, "error": None}
     progress_queues[tid] = asyncio.Queue()
+    active_tasks[tid] = threading.Event()
     return tasks[tid]
+
+
+def cleanup_task(task_id: str):
+    tasks.pop(task_id, None)
+    progress_queues.pop(task_id, None)
+    active_tasks.pop(task_id, None)
 
 async def push_progress(task_id: str, msg_type: str, **kwargs):
     """Push a progress message to the task's WebSocket queue."""
@@ -197,27 +208,29 @@ async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
 
                 await push_progress(tid, "log", level="success", message=f"摄入完成: {safe_name}")
 
-                # Auto-rebuild graph (skip if batch mode)
-                if rebuild:
-                    await push_progress(tid, "log", level="info", message="开始重建图谱...")
-                    await push_progress(tid, "progress", step="graph", message="提取 wikilinks 中...")
+                # Incremental graph update (skip if batch mode)
+                if rebuild and created_pages:
+                    await push_progress(tid, "log", level="info", message="开始增量更新图谱...")
                     loop_get = asyncio.get_event_loop()
-                    try:
-                        await asyncio.wait_for(
-                            loop_get.run_in_executor(
-                                None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
-                            ),
-                            timeout=60
-                        )
-                    except asyncio.TimeoutError:
-                        await push_progress(tid, "log", level="warn", message="图谱重建超时")
-                    graph_json = PROJECT_ROOT / "graph" / "graph.json"
-                    if graph_json.exists():
-                        with open(graph_json) as gf:
-                            gd = json.load(gf)
-                        n_nodes = len(gd.get("nodes", []))
-                        n_edges = len(gd.get("edges", []))
-                        await push_progress(tid, "log", level="success", message=f"图谱已更新: {n_nodes} 节点, {n_edges} 边")
+                    total_nodes = 0
+                    total_edges = 0
+                    for cp in created_pages:
+                        cp_path = PROJECT_ROOT / "wiki" / cp
+                        if cp_path.exists():
+                            try:
+                                result = await asyncio.wait_for(
+                                    loop_get.run_in_executor(
+                                        None,
+                                        lambda path=cp, content=cp_path.read_text(encoding="utf-8"):
+                                            build_graph.build_graph_incremental(path, content, infer=False)
+                                    ),
+                                    timeout=30
+                                )
+                                total_nodes = result["nodes"]
+                                total_edges = result["edges"]
+                            except asyncio.TimeoutError:
+                                await push_progress(tid, "log", level="warn", message=f"增量图谱更新超时: {cp}")
+                    await push_progress(tid, "log", level="success", message=f"图谱已增量更新: {total_nodes} 节点, {total_edges} 边")
 
                 await push_progress(tid, "complete", result={"ingested": safe_name})
                 tasks[tid]["status"] = "completed"
@@ -229,6 +242,8 @@ async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
                 await push_progress(tid, "error", message=err_msg)
                 tasks[tid]["status"] = "failed"
                 tasks[tid]["error"] = err_msg
+            finally:
+                cleanup_task(tid)
 
     asyncio.create_task(run())
     return JSONResponse(task)
@@ -276,6 +291,8 @@ async def api_query(body: dict):
                 await push_progress(tid, "error", message=err_msg)
                 tasks[tid]["status"] = "failed"
                 tasks[tid]["error"] = err_msg
+            finally:
+                cleanup_task(tid)
 
     asyncio.create_task(run())
     return JSONResponse(task)
@@ -313,6 +330,8 @@ async def api_health_check():
                 await push_progress(tid, "error", message=err_msg)
                 tasks[tid]["status"] = "failed"
                 tasks[tid]["error"] = err_msg
+            finally:
+                cleanup_task(tid)
 
     asyncio.create_task(run())
     return JSONResponse(task)
@@ -352,6 +371,8 @@ async def api_lint():
                 await push_progress(tid, "error", message=err_msg)
                 tasks[tid]["status"] = "failed"
                 tasks[tid]["error"] = err_msg
+            finally:
+                cleanup_task(tid)
 
     asyncio.create_task(run())
     return JSONResponse(task)
@@ -398,6 +419,8 @@ async def api_graph(body: dict):
                 await push_progress(tid, "error", message=err_msg)
                 tasks[tid]["status"] = "failed"
                 tasks[tid]["error"] = err_msg
+            finally:
+                cleanup_task(tid)
 
     asyncio.create_task(run())
     return JSONResponse(task)
@@ -471,6 +494,8 @@ async def api_batch_delete(body: dict):
                 await push_progress(tid, "log", level="error", message=f"批量删除失败: {str(e)}")
                 tasks[tid]["status"] = "failed"
                 tasks[tid]["error"] = str(e)
+            finally:
+                cleanup_task(tid)
 
     asyncio.create_task(run())
     return JSONResponse(task)
@@ -532,6 +557,8 @@ async def api_delete_source(source_name: str):
                 await push_progress(tid, "log", level="error", message=f"删除失败: {str(e)}")
                 tasks[tid]["status"] = "failed"
                 tasks[tid]["error"] = str(e)
+            finally:
+                cleanup_task(tid)
 
     asyncio.create_task(run())
     return JSONResponse(task)
@@ -543,6 +570,60 @@ async def api_task_status(task_id: str):
     if task_id not in tasks:
         return JSONResponse({"error": "任务不存在"}, status_code=404)
     return JSONResponse(tasks[task_id])
+
+
+@app.post("/api/cancel/{task_id}")
+async def api_cancel_task(task_id: str):
+    """Cancel a running task."""
+    if task_id in active_tasks:
+        active_tasks[task_id].set()
+        if task_id in tasks:
+            tasks[task_id]["status"] = "cancelled"
+            tasks[task_id]["error"] = "用户取消"
+        return JSONResponse({"status": "cancelling"})
+    return JSONResponse({"status": "not_found"})
+
+
+@app.post("/api/reindex")
+async def api_reindex():
+    """Re-index all wiki pages into the embedding store."""
+    if _write_lock.locked():
+        return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
+    task = make_task("running")
+    tid = task["task_id"]
+
+    async def run():
+        async with _write_lock:
+            try:
+                await push_progress(tid, "log", level="info", message="开始重索引所有页面到向量库...")
+                store = get_embedding_store()
+                wiki_root = PROJECT_ROOT / "wiki"
+                total = 0
+                pages_to_index = list(wiki_root.rglob("*.md"))
+                for i, page in enumerate(pages_to_index):
+                    if active_tasks.get(tid, threading.Event()).is_set():
+                        await push_progress(tid, "log", level="warning", message="重索引已取消")
+                        return
+                    rel = str(page.relative_to(wiki_root))
+                    content = page.read_text(encoding="utf-8")
+                    n = store.index_page(rel, content)
+                    total += n
+                    if (i + 1) % 10 == 0:
+                        await push_progress(tid, "progress", step="reindex", message=f"已处理 {i + 1}/{len(pages_to_index)} 页面")
+                await push_progress(tid, "log", level="success", message=f"重索引完成: {len(pages_to_index)} 页面, {total} 块")
+                await push_progress(tid, "complete", result={"pages": len(pages_to_index), "chunks": total})
+                tasks[tid]["status"] = "completed"
+                tasks[tid]["result"] = {"pages": len(pages_to_index), "chunks": total}
+            except Exception as e:
+                err_msg = _sanitize_error(e)
+                await push_progress(tid, "log", level="error", message=f"重索引失败: {err_msg}")
+                tasks[tid]["status"] = "failed"
+                tasks[tid]["error"] = err_msg
+            finally:
+                cleanup_task(tid)
+
+    asyncio.create_task(run())
+    return JSONResponse(task)
 
 
 @app.get("/api/sources")

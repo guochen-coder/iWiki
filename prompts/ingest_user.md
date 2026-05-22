@@ -6,15 +6,16 @@ Return ONLY a valid JSON object with these fields (no markdown fences, no prose 
   "index_entry": "- [Title](sources/slug.md) — one-line summary",
   "overview_update": "full updated content for wiki/overview.md, or null if no update needed",
   "entity_pages": [
-    {"path": "entities/EntityName.md", "content": "full markdown content"}
+    {"path": "entities/EntityName.md", "content": "full markdown content", "sources": ["raw/my-article.md"]}
   ],
   "concept_pages": [
-    {"path": "concepts/ConceptName.md", "content": "full markdown content"}
+    {"path": "concepts/ConceptName.md", "content": "full markdown content", "sources": ["raw/my-article.md"]}
   ],
   "contradictions": ["describe any contradiction with existing wiki content, or empty list"],
   "log_entry": "## [{today}] ingest | <title>\n\nAdded source. Key claims: ..."
 }
 
+${category_context}
 New source to ingest (file: ${source_name}):
 === SOURCE START ===
 ${source_content}

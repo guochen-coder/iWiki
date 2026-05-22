@@ -66,6 +66,7 @@ import uvicorn
 
 from tools import ingest, query, health, lint as lint_tool, build_graph
 from tools.embeddings import get_store as get_embedding_store
+from server.ingest_queue import IngestQueue
 
 # ── App ──────────────────────────────────────────────────────────
 app = FastAPI(title="iWiki", docs_url=None, redoc_url=None)
@@ -82,6 +83,8 @@ usage_stats = {
 progress_queues: dict[str, asyncio.Queue] = {}
 # Per-task cancel events: task_id -> threading.Event
 active_tasks: dict[str, threading.Event] = {}
+# Ingest queue (initialized lazily after all helpers are defined)
+ingest_queue = None
 
 # ── Helpers ──────────────────────────────────────────────────────
 def now_ts() -> str:
@@ -125,6 +128,12 @@ def _remove_source_map(slug: str):
             p = PROJECT_ROOT / "wiki" / page_path
             if p.exists():
                 p.unlink()
+            # Sync remove embedding
+            try:
+                from tools.embeddings import get_store
+                get_store().remove_page(page_path)
+            except Exception:
+                pass
     SOURCE_MAP_FILE.write_text(json.dumps(mapping, indent=2, ensure_ascii=False))
 
 
@@ -154,6 +163,34 @@ async def track_usage(operation: str = "unknown"):
         usage_stats["by_operation"][operation] = {"count": 0}
     usage_stats["by_operation"][operation]["count"] += 1
 
+
+async def _on_ingest_complete(task):
+    """Post-processing after a queued ingest completes."""
+    slug = task.result.get("slug", "") if task.result else ""
+    created_pages = task.result.get("created_pages", []) if task.result else []
+    if slug:
+        _save_source_map(slug, task.raw_name, created_pages)
+    for cp in created_pages:
+        cp_path = PROJECT_ROOT / "wiki" / cp
+        if cp_path.exists():
+            try:
+                loop = asyncio.get_event_loop()
+                await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda path=cp, content=cp_path.read_text(encoding="utf-8"):
+                            build_graph.build_graph_incremental(path, content, infer=False)
+                    ),
+                    timeout=30
+                )
+            except Exception:
+                pass
+    await track_usage("ingest")
+
+
+# Initialize ingest queue
+ingest_queue = IngestQueue(on_complete=_on_ingest_complete)
+
 # ── Static files ─────────────────────────────────────────────────
 @app.get("/")
 async def root():
@@ -163,90 +200,24 @@ async def root():
 
 @app.post("/api/ingest")
 async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
-    """Upload a document for ingestion. Set rebuild=false to skip auto graph rebuild."""
+    """Upload a document for ingestion. Uses persistent queue for serial processing."""
     if _write_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
-    # Validate file size (50MB)
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         return JSONResponse({"error": "文件过大（>50MB），请压缩或拆分后再试"}, status_code=413)
 
-    # Validate filename
     safe_name = "".join(c for c in file.filename if c.isalnum() or c in "._- " or '一' <= c <= '鿿' or '㐀' <= c <= '䶿')
     if not safe_name.strip():
         return JSONResponse({"error": "文件名无效"}, status_code=400)
 
-    task = make_task("running")
-    tid = task["task_id"]
+    dest = PROJECT_ROOT / "raw" / safe_name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(content)
 
-    async def run():
-        async with _write_lock:
-            try:
-                # Save uploaded file to raw/
-                dest = PROJECT_ROOT / "raw" / safe_name
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(content)
-                await push_progress(tid, "log", level="info", message=f"读取文件: {safe_name}")
-                await push_progress(tid, "progress", step="ingest", message="AI 分析中，可能需要 30-60 秒...")
-
-                # Run ingest in thread pool, capture slug + created pages
-                loop = asyncio.get_event_loop()
-                try:
-                    result = await asyncio.wait_for(
-                        loop.run_in_executor(None, ingest.ingest, str(dest), True),
-                        timeout=300
-                    )
-                except asyncio.TimeoutError:
-                    await push_progress(tid, "error", message="操作超时（5分钟），请检查网络或模型响应速度")
-                    return
-                slug = result["slug"]
-                created_pages = result.get("created_pages", [])
-
-                # Map slug → {raw_name, created_pages} for later lookup (delete, list)
-                _save_source_map(slug, safe_name, created_pages)
-
-                await push_progress(tid, "log", level="success", message=f"摄入完成: {safe_name}")
-
-                # Incremental graph update (skip if batch mode)
-                if rebuild and created_pages:
-                    await push_progress(tid, "log", level="info", message="开始增量更新图谱...")
-                    loop_get = asyncio.get_event_loop()
-                    total_nodes = 0
-                    total_edges = 0
-                    for cp in created_pages:
-                        cp_path = PROJECT_ROOT / "wiki" / cp
-                        if cp_path.exists():
-                            try:
-                                result = await asyncio.wait_for(
-                                    loop_get.run_in_executor(
-                                        None,
-                                        lambda path=cp, content=cp_path.read_text(encoding="utf-8"):
-                                            build_graph.build_graph_incremental(path, content, infer=False)
-                                    ),
-                                    timeout=30
-                                )
-                                total_nodes = result["nodes"]
-                                total_edges = result["edges"]
-                            except asyncio.TimeoutError:
-                                await push_progress(tid, "log", level="warn", message=f"增量图谱更新超时: {cp}")
-                    await push_progress(tid, "log", level="success", message=f"图谱已增量更新: {total_nodes} 节点, {total_edges} 边")
-
-                await push_progress(tid, "complete", result={"ingested": safe_name})
-                tasks[tid]["status"] = "completed"
-                tasks[tid]["result"] = {"ingested": safe_name}
-                await track_usage("ingest")
-            except Exception as e:
-                err_msg = _sanitize_error(e)
-                await push_progress(tid, "log", level="error", message=f"摄入失败: {err_msg}")
-                await push_progress(tid, "error", message=err_msg)
-                tasks[tid]["status"] = "failed"
-                tasks[tid]["error"] = err_msg
-            finally:
-                cleanup_task(tid)
-
-    asyncio.create_task(run())
-    return JSONResponse(task)
+    tid = await ingest_queue.enqueue(str(dest), safe_name)
+    return JSONResponse({"task_id": tid, "status": "queued", "message": "已加入摄入队列"})
 
 
 @app.post("/api/query")
@@ -584,6 +555,26 @@ async def api_cancel_task(task_id: str):
     return JSONResponse({"status": "not_found"})
 
 
+@app.get("/api/queue")
+async def api_queue():
+    """Return all ingest queue tasks."""
+    return JSONResponse(ingest_queue.get_all())
+
+
+@app.post("/api/queue/{task_id}/cancel")
+async def api_queue_cancel(task_id: str):
+    """Cancel a queued ingest task."""
+    ok = await ingest_queue.cancel(task_id)
+    return JSONResponse({"ok": ok})
+
+
+@app.post("/api/queue/{task_id}/retry")
+async def api_queue_retry(task_id: str):
+    """Retry a failed ingest task."""
+    ok = await ingest_queue.retry(task_id)
+    return JSONResponse({"ok": ok})
+
+
 @app.post("/api/reindex")
 async def api_reindex():
     """Re-index all wiki pages into the embedding store."""
@@ -712,6 +703,7 @@ async def api_settings_get():
         "model": os.environ.get("LLM_MODEL", "anthropic/claude-sonnet-4-6"),
         "model_fast": os.environ.get("LLM_MODEL_FAST", "anthropic/claude-sonnet-4-6"),
         "base_url": os.environ.get("ANTHROPIC_BASE_URL", ""),
+        "language": os.environ.get("IWIKI_LANGUAGE", "zh"),
     })
 
 
@@ -736,6 +728,13 @@ async def api_settings_save(body: dict):
         os.environ["LLM_MODEL"] = model
         changed.append("model")
 
+    # Update language
+    if "language" in body:
+        lang = body["language"]
+        if lang in ("zh", "en"):
+            os.environ["IWIKI_LANGUAGE"] = lang
+            changed.append("language")
+
     # Update base URL (always update, empty string clears it)
     if "base_url" in body:
         if base_url:
@@ -759,6 +758,8 @@ async def api_settings_save(body: dict):
             else:
                 settings["env"].pop("ANTHROPIC_BASE_URL", None)
                 settings["env"].pop("ANTHROPIC_BASE_URL", None)
+        if "language" in changed:
+            settings["env"]["IWIKI_LANGUAGE"] = os.environ.get("IWIKI_LANGUAGE", "zh")
         _write_settings_file(settings)
 
     return JSONResponse({"ok": True, "changed": changed})
@@ -857,6 +858,39 @@ async def ws_progress(websocket: WebSocket, task_id: str):
 
 # ── Startup ──────────────────────────────────────────────────────
 def main():
+    from tools.embeddings import init_store as _init_embeddings
+    try:
+        _init_embeddings()
+    except Exception as e:
+        print(f"[iWiki] Embedding store init skipped: {e}")
+
+    # Start file watcher (optional, graceful fallback if watchdog not installed)
+    try:
+        from server.file_watcher import start_watcher
+        async def _auto_enqueue(fp: str, rn: str):
+            await ingest_queue.enqueue(fp, rn)
+        async def _auto_delete(rn: str):
+            slug = Path(rn).stem
+            _remove_source_map(slug)
+            sp = PROJECT_ROOT / "wiki" / "sources" / f"{slug}.md"
+            if sp.exists():
+                sp.unlink()
+        observer, watcher_handler = start_watcher(
+            lambda fp, rn: asyncio.create_task(_auto_enqueue(fp, rn)),
+            lambda rn: asyncio.create_task(_auto_delete(rn)),
+        )
+        print(f"[iWiki] File watcher started on raw/")
+
+        async def _watcher_tick():
+            while True:
+                watcher_handler.tick()
+                await asyncio.sleep(1)
+        asyncio.create_task(_watcher_tick())
+    except ImportError:
+        print("[iWiki] watchdog not installed — file watcher disabled. pip install watchdog")
+    except Exception as e:
+        print(f"[iWiki] File watcher init failed: {e}")
+
     port = int(os.environ.get("PORT", 8765))
     print(f"[iWiki] Starting server on http://localhost:{port}")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")

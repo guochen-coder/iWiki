@@ -155,7 +155,8 @@ def _execute_query(q_hash: str, index_hash: str, question: str) -> tuple[str, tu
     schema = read_file(SCHEMA_FILE)
 
     print(f"  synthesizing answer from {len(relevant_pages)} pages...")
-    prompt = load_prompt("query_synthesis", schema=schema, pages_context=pages_context, question=question)
+    language = os.environ.get("IWIKI_LANGUAGE", "zh")
+    prompt = load_prompt("query_synthesis", schema=schema, pages_context=pages_context, question=question, language=language)
     response = get_client().complete([{"role": "user", "content": prompt}], max_tokens=4096)
     answer = response.text
     usage = response.usage

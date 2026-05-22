@@ -101,6 +101,15 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
 #queue-bar.visible{display:block}
 #queue-bar .q-current{color:var(--accent)}
 #queue-bar .q-pending{color:var(--text-secondary)}
+#queue-panel{padding:4px 12px 0;flex-shrink:0}
+#queue-panel .queue-item{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:4px;font-size:12px;margin-bottom:2px}
+#queue-panel .queue-queued{opacity:.7}
+#queue-panel .queue-processing{background:rgba(255,152,0,0.12)}
+#queue-panel .queue-done{background:rgba(76,175,80,0.12);opacity:.6}
+#queue-panel .queue-failed{background:rgba(244,67,54,0.12)}
+#queue-panel .queue-actions{margin-left:auto;display:flex;gap:4px}
+#queue-panel .queue-actions button{font-size:10px;padding:1px 6px;border-radius:3px;background:transparent;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
+#queue-panel .queue-actions button:hover{background:var(--bg-panel)}
 
 /* Result content (query answers, lint reports) shown above log */
 #result-content{padding:8px 12px;overflow-y:auto;display:none;line-height:1.6;flex-shrink:0;max-height:40%;font-size:13px;border-bottom:1px solid var(--border)}
@@ -227,6 +236,10 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
           <span>📋 操作日志</span>
           <button id="cancel-btn" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;background:var(--error);color:#FFF;font-weight:600">取消</button>
         </div>
+        <div id="queue-panel" style="display:none">
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:4px">📦 摄入队列</div>
+          <div id="queue-list" style="font-size:12px;max-height:200px;overflow-y:auto"></div>
+        </div>
         <div id="queue-bar"></div>
         <div id="processing-indicator"><span id="processing-dot"></span><span id="processing-text">处理中</span></div>
         <div id="result-content"></div>
@@ -309,6 +322,13 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
     <div style="margin-top:12px">
       <label style="font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px">API Key</label>
       <input type="password" id="settings-api-key" placeholder="sk-..." style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;font-family:monospace;background:var(--bg);color:var(--text);box-sizing:border-box">
+    </div>
+    <div style="margin-top:12px">
+      <label style="font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px">输出语言 / Output Language</label>
+      <select id="settings-language" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg);color:var(--text);box-sizing:border-box">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
     </div>
     <div id="settings-test-result" style="margin-top:10px;font-size:13px"></div>
     <div id="usage-panel" style="margin-top:12px;padding:10px;background:var(--bg-panel);border-radius:6px;font-size:12px;color:var(--text-secondary);display:none">
@@ -998,13 +1018,9 @@ function bindEvents() {
         appendLog('warning', '没有可删除的文档');
         return;
       }
-      // Populate checkbox list
-      dom.deleteList.innerHTML = sources.map(s =>
-        `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:14px;cursor:pointer;border-bottom:1px solid var(--border)">
-          <input type="checkbox" class="delete-check" value="${escapeHtml(s.name)}">
-          <span>${escapeHtml(s.raw_name || s.name)}</span>
-        </label>`
-      ).join('');
+      // Progressive rendering: render in batches of 20
+      dom.deleteList.innerHTML = '';
+      renderSourcesBatch(sources, 0);
       dom.deleteSelectAll.checked = false;
       dom.deleteResult.textContent = '';
       dom.deleteConfirmBtn.disabled = false;
@@ -1293,9 +1309,61 @@ function closeSettingsModal() {
   dom.settingsModal.style.display = 'none';
 }
 
+// ── Queue panel ────────────────────────────────────────────────
+setInterval(async () => {
+  try {
+    const resp = await fetch('/api/queue');
+    const tasks = await resp.json();
+    renderQueue(tasks);
+  } catch(e) {}
+}, 3000);
+
+function renderQueue(tasks) {
+  const panel = document.getElementById('queue-panel');
+  const list = document.getElementById('queue-list');
+  if (!tasks || tasks.length === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  list.innerHTML = tasks.map(t => {
+    const statusIcon = {queued: '⏳', processing: '🔄', done: '✅', failed: '❌'}[t.status] || '❓';
+    const actions = [];
+    if (t.status === 'queued') actions.push(`<button onclick="queueCancel('${t.task_id}')">取消</button>`);
+    if (t.status === 'failed') actions.push(`<button onclick="queueRetry('${t.task_id}')">重试</button>`);
+    const error = t.error ? `<span style="color:var(--error);font-size:10px;margin-left:4px">${escapeHtml(t.error.slice(0, 60))}</span>` : '';
+    return `<div class="queue-item queue-${t.status}">
+      <span>${statusIcon}</span>
+      <span>${escapeHtml(t.raw_name)}</span>${error}
+      ${actions.length ? `<span class="queue-actions">${actions.join('')}</span>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── Progressive rendering ──────────────────────────────────────
+const SOURCES_BATCH = 20;
+function renderSourcesBatch(sources, start) {
+  const container = dom.deleteList;
+  const end = Math.min(start + SOURCES_BATCH, sources.length);
+  for (let i = start; i < end; i++) {
+    const s = sources[i];
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;font-size:14px;cursor:pointer;border-bottom:1px solid var(--border)';
+    label.innerHTML = `<input type="checkbox" class="delete-check" value="${escapeHtml(s.name)}"><span>${escapeHtml(s.raw_name || s.name)}</span>`;
+    container.appendChild(label);
+  }
+  if (end < sources.length) {
+    requestAnimationFrame(() => renderSourcesBatch(sources, end));
+  }
+}
+
+async function queueCancel(taskId) {
+  try { await fetch(`/api/queue/${taskId}/cancel`, {method: 'POST'}); } catch(e) {}
+}
+async function queueRetry(taskId) {
+  try { await fetch(`/api/queue/${taskId}/retry`, {method: 'POST'}); } catch(e) {}
+}
+
 function escapeHtml(text) {
   const div = document.createElement('div');
-  div.textContent = text;
+  div.textContent = text || '';
   return div.innerHTML;
 }
 

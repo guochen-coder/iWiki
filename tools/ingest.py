@@ -214,6 +214,36 @@ def validate_ingest(changed_pages: list[str] | None = None) -> dict:
     return {"broken_links": broken_links, "unindexed": unindexed}
 
 
+def _ensure_sources_in_frontmatter(content: str, source_ref: str) -> str:
+    if "---" not in content:
+        return f"---\nsources:\n  - {source_ref}\n---\n\n{content}"
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return content
+    frontmatter = parts[1]
+    if "sources:" in frontmatter:
+        return content
+    lines = content.split("\n")
+    result = []
+    in_frontmatter = False
+    fm_start_count = 0
+    inserted = False
+    for line in lines:
+        result.append(line)
+        if line.strip() == "---":
+            fm_start_count += 1
+            if fm_start_count == 1:
+                in_frontmatter = True
+            else:
+                in_frontmatter = False
+        elif in_frontmatter and not inserted and line.strip().startswith("type:"):
+            result.append(f"sources:\n  - {source_ref}")
+            inserted = True
+    if not inserted:
+        result.insert(1, f"sources:\n  - {source_ref}")
+    return "\n".join(result)
+
+
 def convert_to_md(source: Path) -> Path:
     """Convert a non-markdown file to .md using markitdown.
 
@@ -248,7 +278,7 @@ def convert_to_md(source: Path) -> Path:
     return output
 
 
-def ingest(source_path: str, auto_convert: bool = True):
+def ingest(source_path: str, auto_convert: bool = True, category_hint: str | None = None):
     source = Path(source_path)
     if not source.exists():
         raise FileNotFoundError(f"file not found: {source_path}")
@@ -298,8 +328,10 @@ def ingest(source_path: str, auto_convert: bool = True):
     wiki_context_str = wiki_context if wiki_context else "(wiki is empty — this is the first source)"
     source_name = source.relative_to(REPO_ROOT) if source.is_relative_to(REPO_ROOT) else source.name
 
-    system_msg = load_prompt("ingest_system", schema=schema, wiki_context=wiki_context_str, today=today)
-    user_msg = load_prompt("ingest_user", source_name=str(source_name), source_content=source_content, today=today)
+    language = os.environ.get("IWIKI_LANGUAGE", "zh")
+    system_msg = load_prompt("ingest_system", schema=schema, wiki_context=wiki_context_str, today=today, language=language)
+    category_context = f"\nFile category/context: This file is from the '{category_hint}' directory group." if category_hint else ""
+    user_msg = load_prompt("ingest_user", source_name=str(source_name), source_content=source_content, today=today, category_context=category_context)
     prompt = system_msg + "\n\n" + user_msg
 
     print(f"  calling API (model: ...)")
@@ -333,15 +365,23 @@ def ingest(source_path: str, auto_convert: bool = True):
 
     # Write source page
     slug = data["slug"]
-    write_file(WIKI_DIR / "sources" / f"{slug}.md", data["source_page"])
+    source_ref = f"raw/{source.name}"
+    write_file(WIKI_DIR / "sources" / f"{slug}.md",
+               _ensure_sources_in_frontmatter(data["source_page"], source_ref))
 
     # Write entity pages
     for page in data.get("entity_pages", []):
-        write_file(WIKI_DIR / page["path"], page["content"])
+        content = page.get("content", "")
+        sources_entry = page.get("sources", [source_ref])
+        content = _ensure_sources_in_frontmatter(content, sources_entry[0])
+        write_file(WIKI_DIR / page["path"], content)
 
     # Write concept pages
     for page in data.get("concept_pages", []):
-        write_file(WIKI_DIR / page["path"], page["content"])
+        content = page.get("content", "")
+        sources_entry = page.get("sources", [source_ref])
+        content = _ensure_sources_in_frontmatter(content, sources_entry[0])
+        write_file(WIKI_DIR / page["path"], content)
 
     # Update overview
     if data.get("overview_update"):
@@ -476,9 +516,11 @@ if __name__ == "__main__":
             else:
                 print(f"  ⚠️  Skipping unsupported format: {p.name} ({ext})")
         elif p.is_dir():
-            for f in p.rglob("*"):
+            for f in sorted(p.rglob("*")):
                 if f.is_file() and f.suffix.lower() in ALL_SUPPORTED_EXTENSIONS:
-                    paths_to_process.append(f)
+                    rel_dir = f.parent.relative_to(p).as_posix()
+                    category = f"{p.name}/{rel_dir}" if rel_dir and rel_dir != "." else p.name
+                    paths_to_process.append((f, category))
         else:
             import glob
             for f in glob.glob(arg, recursive=True):
@@ -503,5 +545,9 @@ if __name__ == "__main__":
     if len(unique_paths) > 1:
         print(f"Batch mode: found {len(unique_paths)} files to ingest.")
 
-    for p in unique_paths:
-        ingest(str(p), auto_convert=not no_convert)
+    for item in unique_paths:
+        if isinstance(item, tuple):
+            p, category = item
+            ingest(str(p), auto_convert=not no_convert, category_hint=category)
+        else:
+            ingest(str(item), auto_convert=not no_convert)

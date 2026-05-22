@@ -1,3 +1,7 @@
+Language: **MUST respond in ${language}**.
+- If 'zh': Answer in Chinese. All wikilinks, headers, and content must be in Chinese.
+- If 'en': Answer in English. All output must be in English.
+
 You are querying an LLM Wiki to answer a question. Use the wiki pages below to synthesize a thorough answer. Cite sources using [[PageName]] wikilink syntax.
 
 Schema:

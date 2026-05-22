@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/tests-143%20passed-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/version-1.2.0--dev-orange" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.2.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey" alt="Platform">
 </p>
 
@@ -287,7 +287,7 @@ python server/server.py                 # 重启服务
 git checkout v1.1.0   # 切换到指定版本
 ```
 
-可用版本：`v1.0.1`（初始版）、`v1.1.0`（当前稳定版）。
+可用版本：`v1.0.1`（初始版）、`v1.1.0`（工程化加固）、`v1.2.0`（当前稳定版）。
 
 ### 如何停止服务
 

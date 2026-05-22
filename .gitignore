@@ -28,9 +28,23 @@ graph/
 # Dev reference (not needed at runtime)
 vendor/
 
+# Claude Code — user model preference
+.claude/opencode-model.txt
+
+# OpenCode — temp files
+.atomcode/
+
 # Dev docs (AI agent context, not needed by users)
 CLAUDE.md
 PRD.md
 DEVLOG.md
 SKILLS.md
 项目需求.md
+
+# Auto-generated reference docs
+AGENT-LIST.md
+CATALOG.md
+OpenCode服务器模式文档.mdx
+
+# Pytest cache
+.pytest_cache/

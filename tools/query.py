@@ -17,6 +17,7 @@ import sys
 import re
 import json
 import argparse
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import date
 
@@ -29,29 +30,25 @@ LOG_FILE = WIKI_DIR / "log.md"
 SCHEMA_FILE = REPO_ROOT / "CLAUDE.md"
 
 
+@dataclass
+class QueryResult:
+    answer: str
+    sources: list[str] = field(default_factory=list)
+    tokens_used: int = 0
+    pages_matched: int = 0
+
+
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+from tools.llm_client import get_client
 
 
 def write_file(path: Path, content: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     print(f"  saved: {path.relative_to(REPO_ROOT)}")
-
-
-def call_llm(prompt: str, model_env: str, default_model: str, max_tokens: int = 4096) -> str:
-    try:
-        from litellm import completion
-    except ImportError:
-        raise RuntimeError("litellm not installed. Run: pip install litellm")
-        
-    model = os.getenv(model_env, default_model)
-    response = completion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens
-    )
-    return response.choices[0].message.content
 
 
 def find_relevant_pages(question: str, index_content: str) -> list[Path]:
@@ -113,7 +110,7 @@ def append_log(entry: str):
     LOG_FILE.write_text(entry.strip() + "\n\n" + existing, encoding="utf-8")
 
 
-def query(question: str, save_path: str | None = None):
+def query(question: str, save_path: str | None = None) -> QueryResult:
     today = date.today().isoformat()
 
     # Step 1: Read index
@@ -128,7 +125,7 @@ def query(question: str, save_path: str | None = None):
     if not relevant_pages or len(relevant_pages) <= 1:
         print("  selecting relevant pages via API...")
         prompt = f"Given this wiki index:\n\n{index_content}\n\nWhich pages are most relevant to answering: \"{question}\"\n\nReturn ONLY a JSON array of relative file paths (as listed in the index), e.g. [\"sources/foo.md\", \"concepts/Bar.md\"]. Maximum 10 pages."
-        raw = call_llm(prompt, "LLM_MODEL_FAST", "claude-3-5-haiku-latest", max_tokens=512)
+        raw = get_client().complete([{"role": "user", "content": prompt}], max_tokens=512, use_fast=True).text
         raw = raw.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
@@ -163,10 +160,16 @@ Question: {question}
 
 Write a well-structured markdown answer with headers, bullets, and [[wikilink]] citations. At the end, add a ## Sources section listing the pages you drew from.
 """
-    answer = call_llm(prompt, "LLM_MODEL", "claude-3-5-sonnet-latest", max_tokens=4096)
+    response = get_client().complete([{"role": "user", "content": prompt}], max_tokens=4096)
+    answer = response.text
+    usage = response.usage
+
     print("\n" + "=" * 60)
     print(answer)
     print("=" * 60)
+
+    sources = [str(p.relative_to(WIKI_DIR)) for p in relevant_pages]
+    total_tokens = (usage.prompt_tokens + usage.completion_tokens) if usage else 0
 
     # Step 5: Optionally save answer
     if save_path is not None:
@@ -175,7 +178,7 @@ Write a well-structured markdown answer with headers, bullets, and [[wikilink]] 
             slug = input("\nSave as (slug, e.g. 'my-analysis'): ").strip()
             if not slug:
                 print("Skipping save.")
-                return
+                return QueryResult(answer=answer, sources=sources, tokens_used=total_tokens, pages_matched=len(relevant_pages))
             save_path = f"syntheses/{slug}.md"
 
         full_save_path = WIKI_DIR / save_path
@@ -201,6 +204,8 @@ last_updated: {today}
     # Append to log
     append_log(f"## [{today}] query | {question[:80]}\n\nSynthesized answer from {len(relevant_pages)} pages." +
                (f" Saved to {save_path}." if save_path else ""))
+
+    return QueryResult(answer=answer, sources=sources, tokens_used=total_tokens, pages_matched=len(relevant_pages))
 
 
 if __name__ == "__main__":

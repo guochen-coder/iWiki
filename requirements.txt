@@ -3,5 +3,5 @@ uvicorn[standard]>=0.32.0
 python-multipart>=0.0.18
 litellm~=1.83.10
 networkx~=3.6.1
-# markitdown[all]>=0.1.5,<0.2.0  # 二期：多格式文件支持（需验证 PyPI 可用性）
+markitdown[all]>=0.1.5,<0.2.0
 websockets>=13.0

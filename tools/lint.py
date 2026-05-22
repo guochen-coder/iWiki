@@ -39,19 +39,7 @@ def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def call_llm(prompt: str, model_env: str, default_model: str, max_tokens: int = 4096) -> str:
-    try:
-        from litellm import completion
-    except ImportError:
-        raise RuntimeError("litellm not installed. Run: pip install litellm")
-        
-    model = os.getenv(model_env, default_model)
-    response = completion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens
-    )
-    return response.choices[0].message.content
+from tools.llm_client import get_client
 
 
 def all_wiki_pages() -> list[Path]:
@@ -323,7 +311,7 @@ Return a markdown lint report with these sections:
 
 Be specific — name the exact pages and claims involved.
 """
-    semantic_report = call_llm(prompt, "LLM_MODEL", "claude-3-5-sonnet-latest", max_tokens=3000)
+    semantic_report = get_client().complete([{"role": "user", "content": prompt}], max_tokens=3000).text
 
     # Compose full report
     report_lines = [

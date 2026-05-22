@@ -331,7 +331,7 @@ button:disabled{cursor:not-allowed;pointer-events:none;opacity:.4}
 </div>
 
 <!-- Hidden file input -->
-<input type="file" id="file-input" accept=".md,.txt,.csv,.tsv,.json,.xml,.yaml,.yml" multiple style="display:none">
+<input type="file" id="file-input" accept=".md,.txt,.csv,.tsv,.json,.xml,.yaml,.yml,.pdf,.docx,.pptx,.xlsx,.html" multiple style="display:none">
 
 <!-- Tooltip element -->
 <div class="tooltip" id="tooltip"></div>
@@ -634,7 +634,7 @@ function connectWS(taskId) {
       case 'complete':
         clearInterval(pollInterval);
         appendLog('success', '操作完成');
-        showResult(msg.result);
+        showResult({...msg.result, _sources: msg.result.sources});
         onOperationDone();
         // Refresh graph after ingest/graph-rebuild
         if (State.lastOp === 'ingest' || State.lastOp === 'graph-rebuild') {
@@ -678,10 +678,10 @@ function showResult(result) {
   if (!result) return;
 
   // Query answers → large reading panel
-  if (result.answer && State.lastOp === 'query') {
-    showQueryPanel(State.lastQuery || '', result.answer);
-    return;
-  }
+      if (result.answer && State.lastOp === 'query') {
+        showQueryPanel(State.lastQuery || '', result.answer, result.sources || result._sources);
+        return;
+      }
 
   // Other results → sidebar result area
   dom.resultContent.classList.add('visible');
@@ -707,9 +707,12 @@ function showResult(result) {
 }
 
 // ── Query panel ─────────────────────────────────────────────────
-function showQueryPanel(question, answer) {
+function showQueryPanel(question, answer, sources) {
   dom.queryPanelQuestion.textContent = question || '查询结果';
-  const processed = answer.replace(/\[\[([^\]]+)\]\]/g, '<a class="wikilink" data-page="$1">$1</a>');
+  let processed = answer.replace(/\[\[([^\]]+)\]\]/g, '<a class="wikilink" data-page="$1">$1</a>');
+  if (sources && sources.length > 0) {
+    processed += '\n\n### 引用来源\n' + sources.map(s => `- \`${s}\``).join('\n');
+  }
   const html = marked.parse(processed);
   dom.queryPanelBody.innerHTML = html;
   // Wire up wikilinks

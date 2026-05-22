@@ -16,6 +16,8 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from tools.llm_client import init_client
+
 # ── Load env from .claude/settings.json on startup ────────────
 def _load_claude_env():
     settings_path = PROJECT_ROOT / ".claude" / "settings.json"
@@ -48,6 +50,11 @@ def _load_claude_env():
 
 _load_claude_env()
 
+init_client(
+    model=os.environ.get("LLM_MODEL", "anthropic/claude-sonnet-4-6"),
+    fast_model=os.environ.get("LLM_MODEL_FAST"),
+)
+
 # Ensure required directories exist
 for _d in ["raw", "wiki", "graph"]:
     (PROJECT_ROOT / _d).mkdir(parents=True, exist_ok=True)
@@ -62,7 +69,8 @@ from tools import ingest, query, health, lint as lint_tool, build_graph
 app = FastAPI(title="iWiki", docs_url=None, redoc_url=None)
 
 # ── State ────────────────────────────────────────────────────────
-op_lock = asyncio.Lock()
+_read_sem = asyncio.Semaphore(3)
+_write_lock = asyncio.Lock()
 tasks: dict[str, dict] = {}
 usage_stats = {
     "total_requests": 0,
@@ -80,7 +88,12 @@ def now_ts() -> str:
 def _sanitize_error(e: Exception) -> str:
     """Convert technical auth errors into user-friendly Chinese messages."""
     msg = str(e)
-    if "AuthenticationError" in msg or "no key is set" in msg.lower() or "missing" in msg.lower() and "api" in msg.lower() and "key" in msg.lower():
+    auth_errors = (
+        "AuthenticationError" in msg or
+        "no key is set" in msg.lower() or
+        ("missing" in msg.lower() and "api" in msg.lower() and "key" in msg.lower())
+    )
+    if auth_errors:
         return "Claude Code 可能未登录或 API Key 未配置。请在终端运行 claude login，或在 .claude/settings.json 中配置 ANTHROPIC_API_KEY。"
     return msg
 
@@ -140,7 +153,7 @@ async def root():
 @app.post("/api/ingest")
 async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
     """Upload a document for ingestion. Set rebuild=false to skip auto graph rebuild."""
-    if op_lock.locked():
+    if _write_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
     # Validate file size (50MB)
@@ -157,7 +170,7 @@ async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
     tid = task["task_id"]
 
     async def run():
-        async with op_lock:
+        async with _write_lock:
             try:
                 # Save uploaded file to raw/
                 dest = PROJECT_ROOT / "raw" / safe_name
@@ -168,7 +181,14 @@ async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
 
                 # Run ingest in thread pool, capture slug + created pages
                 loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, ingest.ingest, str(dest), True)
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, ingest.ingest, str(dest), True),
+                        timeout=300
+                    )
+                except asyncio.TimeoutError:
+                    await push_progress(tid, "error", message="操作超时（5分钟），请检查网络或模型响应速度")
+                    return
                 slug = result["slug"]
                 created_pages = result.get("created_pages", [])
 
@@ -182,9 +202,15 @@ async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
                     await push_progress(tid, "log", level="info", message="开始重建图谱...")
                     await push_progress(tid, "progress", step="graph", message="提取 wikilinks 中...")
                     loop_get = asyncio.get_event_loop()
-                    await loop_get.run_in_executor(
-                        None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
-                    )
+                    try:
+                        await asyncio.wait_for(
+                            loop_get.run_in_executor(
+                                None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
+                            ),
+                            timeout=60
+                        )
+                    except asyncio.TimeoutError:
+                        await push_progress(tid, "log", level="warn", message="图谱重建超时")
                     graph_json = PROJECT_ROOT / "graph" / "graph.json"
                     if graph_json.exists():
                         with open(graph_json) as gf:
@@ -211,7 +237,7 @@ async def api_ingest(file: UploadFile = File(...), rebuild: bool = Query(True)):
 @app.post("/api/query")
 async def api_query(body: dict):
     """Ask a question against the wiki."""
-    if op_lock.locked():
+    if _write_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
     question = body.get("question", "").strip()
@@ -222,22 +248,28 @@ async def api_query(body: dict):
     tid = task["task_id"]
 
     async def run():
-        async with op_lock:
+        async with _read_sem:
             try:
                 await push_progress(tid, "log", level="info", message=f"查询: {question}")
                 await push_progress(tid, "progress", step="search", message="正在检索相关页面...")
                 await push_progress(tid, "progress", step="answer", message="AI 正在综合答案...")
 
                 loop = asyncio.get_event_loop()
-                # query.query(question, save_path) prints answer to stdout
-                # We capture it by running in executor and using a temp redirect
-                answer = await loop.run_in_executor(None, lambda: _run_query(question))
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, query.query, question),
+                        timeout=120
+                    )
+                except asyncio.TimeoutError:
+                    await push_progress(tid, "error", message="操作超时（2分钟），请检查网络或模型响应速度")
+                    return
 
                 await push_progress(tid, "log", level="success", message="查询完成")
-                await push_progress(tid, "complete", result={"answer": answer})
+                result_data = {"answer": result.answer, "sources": result.sources, "tokens_used": result.tokens_used, "pages_matched": result.pages_matched}
+                await push_progress(tid, "complete", result=result_data)
                 tasks[tid]["status"] = "completed"
-                tasks[tid]["result"] = {"answer": answer}
-                await track_usage()
+                tasks[tid]["result"] = result_data
+                await track_usage(result.tokens_used, 0)
             except Exception as e:
                 err_msg = _sanitize_error(e)
                 await push_progress(tid, "log", level="error", message=f"查询失败: {err_msg}")
@@ -249,33 +281,28 @@ async def api_query(body: dict):
     return JSONResponse(task)
 
 
-def _run_query(question: str) -> str:
-    """Run query in thread-safe manner, capturing output."""
-    import io
-    old_stdout = sys.stdout
-    sys.stdout = captured = io.StringIO()
-    try:
-        query.query(question)
-        return captured.getvalue()
-    finally:
-        sys.stdout = old_stdout
-
-
 @app.post("/api/health")
 async def api_health_check():
     """Run health check (zero API cost)."""
-    if op_lock.locked():
+    if _write_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
     task = make_task("running")
     tid = task["task_id"]
 
     async def run():
-        async with op_lock:
+        async with _read_sem:
             try:
                 await push_progress(tid, "log", level="info", message="执行健康检查...")
                 loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, health.run_health)
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, health.run_health),
+                        timeout=30
+                    )
+                except asyncio.TimeoutError:
+                    await push_progress(tid, "error", message="操作超时（30秒）")
+                    return
                 await push_progress(tid, "log", level="success", message="健康检查完成")
                 await push_progress(tid, "complete", result=result)
                 tasks[tid]["status"] = "completed"
@@ -294,19 +321,26 @@ async def api_health_check():
 @app.post("/api/lint")
 async def api_lint():
     """Run content quality check."""
-    if op_lock.locked():
+    if _write_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
     task = make_task("running")
     tid = task["task_id"]
 
     async def run():
-        async with op_lock:
+        async with _write_lock:
             try:
                 await push_progress(tid, "log", level="info", message="执行内容检查...")
                 await push_progress(tid, "progress", step="lint", message="AI 正在分析内容质量...")
                 loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lint_tool.run_lint)
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, lint_tool.run_lint),
+                        timeout=180
+                    )
+                except asyncio.TimeoutError:
+                    await push_progress(tid, "error", message="操作超时（3分钟），请检查网络或模型响应速度")
+                    return
                 await push_progress(tid, "log", level="success", message="内容检查完成")
                 await push_progress(tid, "complete", result=result if isinstance(result, dict) else {"report": str(result)})
                 tasks[tid]["status"] = "completed"
@@ -326,14 +360,14 @@ async def api_lint():
 @app.post("/api/graph")
 async def api_graph(body: dict):
     """Rebuild knowledge graph."""
-    if op_lock.locked():
+    if _write_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
     task = make_task("running")
     tid = task["task_id"]
 
     async def run():
-        async with op_lock:
+        async with _write_lock:
             try:
                 await push_progress(tid, "log", level="info", message="开始重建图谱...")
                 await push_progress(tid, "progress", step="scan", message="扫描 wiki 页面...")
@@ -341,9 +375,16 @@ async def api_graph(body: dict):
 
                 loop = asyncio.get_event_loop()
                 # Build graph without opening browser, with inference
-                result = await loop.run_in_executor(
-                    None, lambda: build_graph.build_graph(infer=True, open_browser=False, clean=False)
-                )
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None, lambda: build_graph.build_graph(infer=True, open_browser=False, clean=False)
+                        ),
+                        timeout=600
+                    )
+                except asyncio.TimeoutError:
+                    await push_progress(tid, "error", message="图谱构建超时（10分钟），请检查网络或模型响应速度")
+                    return
 
                 await push_progress(tid, "progress", step="community", message="计算社区结构...")
                 await push_progress(tid, "log", level="success", message="图谱构建完成")
@@ -365,7 +406,7 @@ async def api_graph(body: dict):
 @app.post("/api/sources/batch-delete")
 async def api_batch_delete(body: dict):
     """Delete multiple documents at once, rebuild graph once at the end."""
-    if op_lock.locked():
+    if _write_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
     names = body.get("names", [])
@@ -376,7 +417,7 @@ async def api_batch_delete(body: dict):
     tid = task["task_id"]
 
     async def run():
-        async with op_lock:
+        async with _write_lock:
             try:
                 deleted = []
                 source_map = _load_source_map()
@@ -406,9 +447,15 @@ async def api_batch_delete(body: dict):
                 await push_progress(tid, "log", level="info", message="开始重建图谱...")
                 await push_progress(tid, "progress", step="graph", message="提取 wikilinks 中...")
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
-                )
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
+                        ),
+                        timeout=60
+                    )
+                except asyncio.TimeoutError:
+                    await push_progress(tid, "log", level="warn", message="图谱重建超时")
                 graph_json = PROJECT_ROOT / "graph" / "graph.json"
                 if graph_json.exists():
                     with open(graph_json) as gf:
@@ -432,14 +479,14 @@ async def api_batch_delete(body: dict):
 @app.delete("/api/sources/{source_name}")
 async def api_delete_source(source_name: str):
     """Delete an ingested document."""
-    if op_lock.locked():
+    if _write_lock.locked():
         return JSONResponse({"error": "另一个操作正在进行，请等待"}, status_code=423)
 
     task = make_task("running")
     tid = task["task_id"]
 
     async def run():
-        async with op_lock:
+        async with _write_lock:
             try:
                 # Remove the source page
                 source_page = PROJECT_ROOT / "wiki" / "sources" / f"{source_name}.md"
@@ -461,9 +508,15 @@ async def api_delete_source(source_name: str):
                 await push_progress(tid, "log", level="info", message="开始重建图谱...")
                 await push_progress(tid, "progress", step="graph", message="提取 wikilinks 中...")
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
-                )
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None, lambda: build_graph.build_graph(infer=False, open_browser=False, clean=False)
+                        ),
+                        timeout=60
+                    )
+                except asyncio.TimeoutError:
+                    await push_progress(tid, "log", level="warn", message="图谱重建超时")
                 graph_json = PROJECT_ROOT / "graph" / "graph.json"
                 if graph_json.exists():
                     with open(graph_json) as gf:

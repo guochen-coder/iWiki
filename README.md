@@ -4,6 +4,7 @@
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/tests-143%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/version-1.2.0--dev-orange" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey" alt="Platform">
 </p>
 
@@ -265,6 +266,28 @@ raw/      ← 你上传的原始文档
 ```
 
 不依赖任何云服务或数据库。用 Git 就能备份和版本控制。
+
+### 如何升级到新版本
+
+```bash
+cd iWiki
+git pull origin main                    # 拉取最新代码
+source venv/bin/activate
+pip install -r requirements.txt         # 更新依赖
+python server/server.py                 # 重启服务
+```
+
+- `wiki/` 和 `raw/` 中的数据完全兼容，不会丢失
+- 如果升级后启动报错，试试重建虚拟环境：`rm -rf venv && python3 -m venv venv`
+- 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)
+
+### 如何切换到稳定版本
+
+```bash
+git checkout v1.1.0   # 切换到指定版本
+```
+
+可用版本：`v1.0.1`（初始版）、`v1.1.0`（当前稳定版）。
 
 ### 如何停止服务
 
